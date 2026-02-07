@@ -194,6 +194,12 @@ async function showCompletion(config: {
 export const onboardCommand = new Command('onboard')
   .description('Interactive setup wizard for Vena')
   .action(async () => {
+    // prompts/readline create multiple exit listeners; bump limit to avoid warnings during onboarding
+    const previousMaxListeners = process.getMaxListeners();
+    if (previousMaxListeners !== 0 && previousMaxListeners < 30) {
+      process.setMaxListeners(30);
+    }
+
     const totalSteps = 8;
 
     // ── Welcome Screen ────────────────────────────────────────────────
