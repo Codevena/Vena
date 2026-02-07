@@ -105,7 +105,7 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
 - `vena onboard` → 6-step wizard → writes `~/.vena/vena.json`
 - `vena chat` → real LLM streaming via provider, token counting, readline REPL, `--character` flag
 - `vena start` → Full platform boot:
-  - **Tools:** bash, read, write, edit, web_browse (trust-level gated via ToolGuard)
+  - **Tools:** bash, read, write, edit, web_browse, browser (trust-level gated via ToolGuard)
   - **Semantic Memory:** KnowledgeGraph + EntityExtractor + SemanticIndex + ContextRanker via MemoryEngine (when `semanticMemory.enabled`)
   - **Voice:** STT (Whisper/Deepgram) transcription of voice messages + TTS (ElevenLabs/OpenAI) response synthesis via VoiceMessagePipeline (when API keys configured)
   - **Multi-Agent:** Per-agent AgentLoops with own provider/trust/tools + MeshNetwork capability-based routing (when >1 agent in registry)
@@ -123,11 +123,10 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
 - **Tests:** 8 test files, 67 unit tests (vitest) covering security, identity, gateway, skills
 
 ### PACKAGES BUILT BUT NOT YET WIRED INTO START:
-- `@vena/computer` - Browser (Playwright) exists but not registered as tool (Shell is wired via BashTool)
 - `@vena/integrations` - Google APIs exist but not connected as tools
 
 ### NEXT PRIORITY:
-Wire browser tool → Wire Google integrations as tools → README
+Wire Google integrations as tools → README
 
 ## Build Commands
 

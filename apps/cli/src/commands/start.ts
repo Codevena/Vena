@@ -16,8 +16,10 @@ import {
   WriteTool,
   EditTool,
   WebBrowseTool,
+  BrowserTool,
   ToolGuard,
 } from '@vena/core';
+import type { BrowserAdapter } from '@vena/core';
 import type { SecurityPolicy, SemanticMemoryProvider } from '@vena/core';
 import { MemoryEngine } from '@vena/semantic-memory';
 import type { LLMProvider } from '@vena/providers';
@@ -327,6 +329,20 @@ export const startCommand = new Command('start')
       }
     }
 
+    // ── Browser Adapter (lazy Playwright import) ──────────────────────
+    let browserAdapter: BrowserAdapter | undefined;
+
+    if (config.computer.browser.enabled) {
+      try {
+        const { BrowserController } = await import('@vena/computer');
+        const controller = new BrowserController();
+        browserAdapter = controller;
+        log.info('Browser adapter available (Playwright)');
+      } catch {
+        log.warn('Playwright not available — browser tool disabled. Install with: npx playwright install');
+      }
+    }
+
     // ── Load Skills ──────────────────────────────────────────────────
     const skillRegistry = new SkillRegistry();
     const injector = new SkillInjector();
@@ -383,6 +399,10 @@ export const startCommand = new Command('start')
 
       if (trustLevel === 'full' && config.computer.shell.enabled) {
         tools.push(new BashTool({ envPassthrough: config.security.shell.envPassthrough }));
+      }
+
+      if (trustLevel !== 'readonly' && config.computer.browser.enabled && browserAdapter) {
+        tools.push(new BrowserTool(browserAdapter, config.computer.browser.headless));
       }
 
       return { tools, guard };
@@ -708,6 +728,16 @@ export const startCommand = new Command('start')
           console.log(`  ${colors.dim('●')} ${channel.name} disconnected`);
         } catch (err) {
           log.error({ error: err, channel: channel.name }, 'Error disconnecting channel');
+        }
+      }
+
+      // Close browser
+      if (browserAdapter) {
+        try {
+          await browserAdapter.close();
+          console.log(`  ${colors.dim('●')} Browser closed`);
+        } catch {
+          // May not have been launched
         }
       }
 

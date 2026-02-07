@@ -26,6 +26,9 @@ importers:
       '@vena/channels':
         specifier: workspace:*
         version: link:../../packages/channels
+      '@vena/computer':
+        specifier: workspace:*
+        version: link:../../packages/computer
       '@vena/core':
         specifier: workspace:*
         version: link:../../packages/core
