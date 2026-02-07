@@ -44,6 +44,51 @@ const PROVIDER_INFO: Record<string, string> = {
   ollama: 'Private, runs on your machine',
 };
 
+const PROVIDER_AUTH_HELP: Record<string, {
+  apiKeyUrl?: string;
+  oauthUrl?: string;
+  oauthGuideUrl?: string;
+  oauthNote?: string;
+}> = {
+  anthropic: {
+    apiKeyUrl: 'https://platform.claude.com/',
+    oauthNote: 'Anthropic does not issue OAuth tokens for the API.',
+  },
+  openai: {
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
+    oauthNote: 'OpenAI does not issue OAuth tokens for the API.',
+  },
+  gemini: {
+    apiKeyUrl: 'https://aistudio.google.com/app/apikey',
+    oauthUrl: 'https://console.cloud.google.com/apis/credentials',
+    oauthGuideUrl: 'https://ai.google.dev/palm_docs/oauth_quickstart',
+    oauthNote: 'Vena does not generate Gemini OAuth tokens; paste an existing access token. For Workspace tools, run: vena config google-auth',
+  },
+};
+
+function printAuthHelp(providerKey: string, authType: 'api_key' | 'oauth_token'): void {
+  const help = PROVIDER_AUTH_HELP[providerKey];
+  if (!help) return;
+
+  if (authType === 'api_key' && help.apiKeyUrl) {
+    console.log(`  ${colors.dim('Get an API key:')} ${colors.secondary(help.apiKeyUrl)}`);
+    console.log();
+  }
+
+  if (authType === 'oauth_token') {
+    if (help.oauthUrl) {
+      console.log(`  ${colors.dim('Create OAuth client:')} ${colors.secondary(help.oauthUrl)}`);
+    }
+    if (help.oauthGuideUrl) {
+      console.log(`  ${colors.dim('OAuth guide:')} ${colors.secondary(help.oauthGuideUrl)}`);
+    }
+    if (help.oauthNote) {
+      console.log(`  ${colors.dim(help.oauthNote)}`);
+    }
+    console.log();
+  }
+}
+
 // ── Welcome Animation ─────────────────────────────────────────────────
 async function showWelcome(): Promise<void> {
   clearScreen();
@@ -248,9 +293,11 @@ export const onboardCommand = new Command('onboard')
         { title: `${colors.primary('●')} o3-mini                ${colors.dim('─ Fast reasoning')}`, value: 'o3-mini' },
       ],
       gemini: [
-        { title: `${colors.primary('●')} Gemini 2.5 Pro         ${colors.dim('─ Most capable')}`, value: 'gemini-2.5-pro-preview-06-05' },
-        { title: `${colors.primary('●')} Gemini 2.0 Flash       ${colors.dim('─ Fast & efficient (Recommended)')}`, value: 'gemini-2.0-flash' },
-        { title: `${colors.primary('●')} Gemini 2.0 Flash Lite  ${colors.dim('─ Cheapest')}`, value: 'gemini-2.0-flash-lite' },
+        { title: `${colors.primary('●')} Gemini 3 Pro (Preview)    ${colors.dim('─ Most capable')}`, value: 'gemini-3-pro-preview' },
+        { title: `${colors.primary('●')} Gemini 3 Flash (Preview)  ${colors.dim('─ Fast & efficient (Recommended)')}`, value: 'gemini-3-flash-preview' },
+        { title: `${colors.primary('●')} Gemini 2.5 Pro            ${colors.dim('─ Strong previous gen')}`, value: 'gemini-2.5-pro' },
+        { title: `${colors.primary('●')} Gemini 2.5 Flash          ${colors.dim('─ Balanced cost/perf')}`, value: 'gemini-2.5-flash' },
+        { title: `${colors.primary('●')} Gemini 2.5 Flash Lite     ${colors.dim('─ Cheapest')}`, value: 'gemini-2.5-flash-lite' },
       ],
       ollama: [
         { title: `${colors.primary('●')} Llama 3.1              ${colors.dim('─ Meta open-source')}`, value: 'llama3.1' },
@@ -290,7 +337,7 @@ export const onboardCommand = new Command('onboard')
         type: 'text',
         name: 'customModel',
         message: colors.primary('▸') + ' Model ID',
-        hint: 'e.g. claude-opus-4-6, gpt-4-turbo, gemini-2.5-pro',
+        hint: 'e.g. claude-opus-4-6, gpt-4-turbo, gemini-3-pro-preview',
       }, {
         onCancel: () => {
           console.log();
@@ -318,7 +365,7 @@ export const onboardCommand = new Command('onboard')
         message: colors.primary('▸') + ' Auth Method',
         choices: [
           { title: `${colors.primary('●')} API Key       ${colors.dim('─ Standard API key from provider dashboard')}`, value: 'api_key' },
-          { title: `${colors.primary('●')} OAuth Token   ${colors.dim('─ OAuth2 access token or bearer token')}`, value: 'oauth_token' },
+          { title: `${colors.primary('●')} OAuth/Bearer  ${colors.dim('─ Paste an access token (Advanced)')}`, value: 'oauth_token' },
         ],
       }, {
         onCancel: () => {
@@ -330,6 +377,7 @@ export const onboardCommand = new Command('onboard')
       });
 
       authType = authChoice.authType as 'api_key' | 'oauth_token';
+      printAuthHelp(providerKey, authType);
 
       if (authType === 'api_key') {
         console.log();

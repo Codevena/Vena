@@ -1,10 +1,43 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import prompts from 'prompts';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { GoogleAuth } from '@vena/integrations';
 
 const CONFIG_PATH = path.join(os.homedir(), '.vena', 'vena.json');
+
+const DEFAULT_GOOGLE_SCOPE_KEYS = ['gmail', 'docs', 'sheets', 'calendar', 'drive'] as const;
+
+const GOOGLE_SCOPE_MAP: Record<string, string[]> = {
+  gmail: ['https://www.googleapis.com/auth/gmail.modify'],
+  calendar: ['https://www.googleapis.com/auth/calendar'],
+  drive: ['https://www.googleapis.com/auth/drive'],
+  docs: ['https://www.googleapis.com/auth/documents'],
+  sheets: ['https://www.googleapis.com/auth/spreadsheets'],
+};
+
+function normalizeGoogleScopes(scopes?: string[]): { scopeKeys: string[]; oauthScopes: string[] } {
+  const raw = (scopes && scopes.length > 0) ? scopes : [...DEFAULT_GOOGLE_SCOPE_KEYS];
+  const oauthScopes: string[] = [];
+
+  for (const scope of raw) {
+    if (scope.startsWith('http://') || scope.startsWith('https://')) {
+      oauthScopes.push(scope);
+      continue;
+    }
+    const mapped = GOOGLE_SCOPE_MAP[scope];
+    if (mapped) {
+      oauthScopes.push(...mapped);
+      continue;
+    }
+    oauthScopes.push(scope);
+  }
+
+  const unique = Array.from(new Set(oauthScopes));
+  return { scopeKeys: raw, oauthScopes: unique };
+}
 
 function loadRawConfig(): Record<string, unknown> | null {
   if (!fs.existsSync(CONFIG_PATH)) return null;
@@ -121,4 +154,115 @@ configCommand
     setNestedValue(config, key, value);
     saveConfig(config);
     console.log(chalk.green(`\n  \u2713 Set ${key} = ${value}\n`));
+  });
+
+configCommand
+  .command('google-auth')
+  .description('Authorize Google Workspace access via OAuth')
+  .option('--redirect <url>', 'Override OAuth redirect URI')
+  .option('--scopes <list>', 'Comma-separated scopes or scope keys (gmail, docs, sheets, calendar, drive)')
+  .action(async (opts: { redirect?: string; scopes?: string }) => {
+    const config = loadRawConfig();
+    if (!config) {
+      console.log(chalk.yellow('\n  No configuration found. Run'), chalk.bold('vena onboard'), chalk.yellow('first.\n'));
+      return;
+    }
+
+    const googleConfig = (config['google'] as Record<string, unknown> | undefined) ?? {};
+    let clientId = googleConfig['clientId'] as string | undefined;
+    let clientSecret = googleConfig['clientSecret'] as string | undefined;
+
+    if (!clientId || !clientSecret) {
+      console.log();
+      console.log(chalk.bold('  Google OAuth setup'));
+      console.log(chalk.dim('  Enter your Google OAuth client ID and secret.'));
+      console.log();
+
+      const creds = await prompts([
+        {
+          type: 'text',
+          name: 'clientId',
+          message: 'Client ID',
+          initial: clientId,
+        },
+        {
+          type: 'password',
+          name: 'clientSecret',
+          message: 'Client Secret',
+          initial: clientSecret,
+        },
+      ], {
+        onCancel: () => {
+          console.log();
+          console.log(chalk.yellow('  Cancelled.'));
+          process.exit(0);
+        },
+      });
+
+      clientId = creds.clientId as string;
+      clientSecret = creds.clientSecret as string;
+
+      if (!clientId || !clientSecret) {
+        console.log(chalk.red('\n  Client ID and secret are required.\n'));
+        return;
+      }
+
+      googleConfig['clientId'] = clientId;
+      googleConfig['clientSecret'] = clientSecret;
+      config['google'] = googleConfig;
+      saveConfig(config);
+      console.log(chalk.green('\n  \u2713 Saved Google OAuth credentials to config\n'));
+    }
+
+    const scopeInput = opts.scopes
+      ? opts.scopes.split(',').map((s) => s.trim()).filter(Boolean)
+      : (googleConfig['scopes'] as string[] | undefined);
+
+    if (scopeInput && scopeInput.length > 0) {
+      googleConfig['scopes'] = scopeInput;
+      config['google'] = googleConfig;
+      saveConfig(config);
+    } else if (!googleConfig['scopes']) {
+      googleConfig['scopes'] = [...DEFAULT_GOOGLE_SCOPE_KEYS];
+      config['google'] = googleConfig;
+      saveConfig(config);
+    }
+
+    const { scopeKeys, oauthScopes } = normalizeGoogleScopes(googleConfig['scopes'] as string[] | undefined);
+
+    const auth = new GoogleAuth({
+      clientId,
+      clientSecret,
+      redirectUri: opts.redirect,
+    });
+
+    console.log(chalk.bold('  Google OAuth Authorization'));
+    console.log(chalk.dim(`  Scopes: ${scopeKeys.join(', ')}`));
+    console.log();
+    console.log(chalk.dim('  Open this URL in your browser to authorize:'));
+    console.log(`  ${auth.getAuthUrl(oauthScopes)}`);
+    console.log();
+
+    const codeResponse = await prompts({
+      type: 'text',
+      name: 'code',
+      message: 'Authorization Code',
+    }, {
+      onCancel: () => {
+        console.log();
+        console.log(chalk.yellow('  Cancelled.'));
+        process.exit(0);
+      },
+    });
+
+    const code = (codeResponse.code as string) ?? '';
+    if (!code) {
+      console.log(chalk.yellow('\n  No authorization code provided.\n'));
+      return;
+    }
+
+    await auth.exchangeCode(code);
+
+    const tokenPath = path.join(os.homedir(), '.vena', 'google-tokens.json');
+    console.log(chalk.green(`\n  \u2713 Tokens saved to ${tokenPath}\n`));
   });

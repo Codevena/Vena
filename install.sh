@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ─── Vena Install Script ────────────────────────────────────────────────────
-# Usage: curl -fsSL https://raw.githubusercontent.com/your-org/vena/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Codevena/Vena/master/install.sh | bash
 
 VERSION="0.1.0"
-REPO_URL="https://github.com/your-org/vena.git"
+REPO_URL="https://github.com/Codevena/Vena.git"
 INSTALL_DIR="${VENA_INSTALL_DIR:-$HOME/.vena}"
 BIN_DIR="${VENA_BIN_DIR:-$HOME/.local/bin}"
 
@@ -136,8 +136,8 @@ main() {
 
   # Step 4: Build
   step 4 5 "Building Vena..."
-  pnpm --filter @vena/shared build --silent 2>/dev/null || pnpm --filter @vena/shared build
-  pnpm -r build --silent 2>/dev/null || pnpm -r build
+  pnpm --filter @vena/shared --silent build 2>/dev/null || pnpm --filter @vena/shared build
+  pnpm -r --silent build 2>/dev/null || pnpm -r build
   success "All packages built (12/12)"
   echo ""
 
