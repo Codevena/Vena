@@ -193,7 +193,7 @@ async function showCompletion(config: {
 export const onboardCommand = new Command('onboard')
   .description('Interactive setup wizard for Vena')
   .action(async () => {
-    const totalSteps = 5;
+    const totalSteps = 6;
 
     // ── Welcome Screen ────────────────────────────────────────────────
     await showWelcome();
@@ -227,13 +227,83 @@ export const onboardCommand = new Command('onboard')
     // Map 'google' back to 'gemini' for config compatibility
     const providerKey = provider === 'google' ? 'gemini' : provider;
 
-    // ── Step 2: Authentication ────────────────────────────────────────
+    // ── Step 2: Choose Model ────────────────────────────────────────
+    const MODEL_CHOICES: Record<string, Array<{ title: string; value: string }>> = {
+      anthropic: [
+        { title: `${colors.primary('●')} Claude Opus 4.6        ${colors.dim('─ Most capable, best reasoning')}`, value: 'claude-opus-4-6' },
+        { title: `${colors.primary('●')} Claude Sonnet 4.5      ${colors.dim('─ Fast & capable (Recommended)')}`, value: 'claude-sonnet-4-5-20250929' },
+        { title: `${colors.primary('●')} Claude Haiku 4.5       ${colors.dim('─ Fastest, cheapest')}`, value: 'claude-haiku-4-5-20251001' },
+      ],
+      openai: [
+        { title: `${colors.primary('●')} GPT-4o                 ${colors.dim('─ Most capable, multimodal')}`, value: 'gpt-4o' },
+        { title: `${colors.primary('●')} GPT-4o Mini            ${colors.dim('─ Faster, cheaper')}`, value: 'gpt-4o-mini' },
+        { title: `${colors.primary('●')} o1                     ${colors.dim('─ Advanced reasoning')}`, value: 'o1' },
+        { title: `${colors.primary('●')} o3-mini                ${colors.dim('─ Fast reasoning')}`, value: 'o3-mini' },
+      ],
+      gemini: [
+        { title: `${colors.primary('●')} Gemini 2.5 Pro         ${colors.dim('─ Most capable')}`, value: 'gemini-2.5-pro-preview-06-05' },
+        { title: `${colors.primary('●')} Gemini 2.0 Flash       ${colors.dim('─ Fast & efficient (Recommended)')}`, value: 'gemini-2.0-flash' },
+        { title: `${colors.primary('●')} Gemini 2.0 Flash Lite  ${colors.dim('─ Cheapest')}`, value: 'gemini-2.0-flash-lite' },
+      ],
+      ollama: [
+        { title: `${colors.primary('●')} Llama 3.1              ${colors.dim('─ Meta open-source')}`, value: 'llama3.1' },
+        { title: `${colors.primary('●')} Mistral Large          ${colors.dim('─ Best open model')}`, value: 'mistral-large' },
+        { title: `${colors.primary('●')} DeepSeek V3            ${colors.dim('─ Strong reasoning')}`, value: 'deepseek-v3' },
+        { title: `${colors.primary('●')} Qwen 2.5               ${colors.dim('─ Multilingual')}`, value: 'qwen2.5' },
+      ],
+    };
+
+    printStepHeader(2, totalSteps, 'Choose Your Model', 'Select which model to use, or type a custom model ID.');
+
+    const modelChoices = MODEL_CHOICES[providerKey] ?? [];
+    // Add "Custom" option at the end
+    modelChoices.push({
+      title: `${colors.dim('●')} Custom...              ${colors.dim('─ Enter any model ID manually')}`,
+      value: '__custom__',
+    });
+
+    const modelResponse = await prompts({
+      type: 'select',
+      name: 'model',
+      message: colors.primary('▸') + ' Model',
+      choices: modelChoices,
+    }, {
+      onCancel: () => {
+        console.log();
+        console.log(colors.secondary('  Setup cancelled.'));
+        console.log();
+        process.exit(0);
+      },
+    });
+
+    let selectedModel: string = modelResponse.model as string;
+
+    if (selectedModel === '__custom__') {
+      const customModelResponse = await prompts({
+        type: 'text',
+        name: 'customModel',
+        message: colors.primary('▸') + ' Model ID',
+        hint: 'e.g. claude-opus-4-6, gpt-4-turbo, gemini-2.5-pro',
+      }, {
+        onCancel: () => {
+          console.log();
+          console.log(colors.secondary('  Setup cancelled.'));
+          console.log();
+          process.exit(0);
+        },
+      });
+      selectedModel = (customModelResponse.customModel as string) || 'unknown';
+    }
+
+    console.log(`  ${colors.success('✓')} ${colors.dim(`Model: ${selectedModel}`)}`);
+
+    // ── Step 3: Authentication ──────────────────────────────────────
     let apiKey = '';
     let authType: 'api_key' | 'oauth_token' = 'api_key';
     let oauthToken = '';
 
     if (providerKey !== 'ollama') {
-      printStepHeader(2, totalSteps, 'Authentication', `Choose how to authenticate with ${provider}.`);
+      printStepHeader(3, totalSteps, 'Authentication', `Choose how to authenticate with ${provider}.`);
 
       const authChoice = await prompts({
         type: 'select',
@@ -294,14 +364,14 @@ export const onboardCommand = new Command('onboard')
         }
       }
     } else {
-      printStepHeader(2, totalSteps, 'Local Provider Selected', 'No API key needed for Ollama. Make sure it\'s running at localhost:11434.');
+      printStepHeader(3, totalSteps, 'Local Provider Selected', 'No API key needed for Ollama. Make sure it\'s running at localhost:11434.');
       console.log(`  ${colors.success('✓')} ${colors.dim('Ollama selected - no API key required')}`);
       await sleep(500);
     }
 
     // ── Step 3: Name Your Agent ───────────────────────────────────────
     const trait = randomTrait();
-    printStepHeader(3, totalSteps, 'Name Your Agent', `Give your AI a name. Suggested personality: ${colors.secondary(trait)}`);
+    printStepHeader(4, totalSteps, 'Name Your Agent', `Give your AI a name. Suggested personality: ${colors.secondary(trait)}`);
 
     const nameResponse = await prompts({
       type: 'text',
@@ -320,7 +390,7 @@ export const onboardCommand = new Command('onboard')
     const agentName = (nameResponse.agentName as string) || 'Vena';
 
     // ── Step 4: Enable Channels & Telegram Token ──────────────────────
-    printStepHeader(4, totalSteps, 'Enable Channels', 'Choose which messaging channels to connect.');
+    printStepHeader(5, totalSteps, 'Enable Channels', 'Choose which messaging channels to connect.');
 
     const channelResponse = await prompts({
       type: 'multiselect',
@@ -369,7 +439,7 @@ export const onboardCommand = new Command('onboard')
     }
 
     // ── Step 5: Feature Selection ─────────────────────────────────────
-    printStepHeader(5, totalSteps, 'Enable Features', 'Select which capabilities to enable for your agent.');
+    printStepHeader(6, totalSteps, 'Enable Features', 'Select which capabilities to enable for your agent.');
 
     const featureResponse = await prompts({
       type: 'multiselect',
@@ -398,33 +468,25 @@ export const onboardCommand = new Command('onboard')
     console.log(`  ${progressBar(totalSteps, totalSteps, 40)}`);
     console.log();
 
-    const providerModels: Record<string, string> = {
-      anthropic: 'claude-sonnet-4-5-20250929',
-      openai: 'gpt-4o',
-      gemini: 'gemini-2.0-flash',
-      ollama: 'llama3',
-    };
-
     const enableMemory = features.includes('memory');
     const enableComputer = features.includes('computer');
     const enableVoice = features.includes('voice');
 
     // Build provider auth config
     const buildProviderEntry = () => {
-      const model = providerModels[providerKey] ?? 'unknown';
       if (providerKey === 'ollama') {
-        return { ollama: { baseUrl: 'http://localhost:11434', model: 'llama3' } };
+        return { ollama: { baseUrl: 'http://localhost:11434', model: selectedModel } };
       }
       if (authType === 'oauth_token') {
         return {
           [providerKey]: {
-            model,
+            model: selectedModel,
             auth: { type: 'oauth_token' as const, oauthToken },
           },
         };
       }
       return {
-        [providerKey]: { apiKey, model },
+        [providerKey]: { apiKey, model: selectedModel },
       };
     };
 

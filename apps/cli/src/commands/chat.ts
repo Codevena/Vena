@@ -39,67 +39,89 @@ function loadConfig(): VenaConfig {
   return parseConfig(resolved);
 }
 
-function createProvider(config: VenaConfig): { provider: LLMProvider; model: string } {
-  const defaultProvider = config.providers.default;
+/**
+ * Create an LLM provider instance. Supports:
+ * - API key auth (legacy)
+ * - OAuth token auth (new)
+ * - Model override (any model string accepted)
+ * - Provider override (switch provider at runtime)
+ */
+function createProvider(
+  config: VenaConfig,
+  overrideProvider?: string,
+  overrideModel?: string,
+): { provider: LLMProvider; model: string; providerName: string } {
+  const providerName = overrideProvider ?? config.providers.default;
 
-  switch (defaultProvider) {
+  switch (providerName) {
     case 'anthropic': {
       const cfg = config.providers.anthropic;
-      if (!cfg?.apiKey) {
-        throw new Error('Anthropic API key not configured. Set providers.anthropic.apiKey in ~/.vena/vena.json');
+      if (!cfg?.apiKey && !cfg?.auth) {
+        throw new Error('Anthropic not configured. Set providers.anthropic.apiKey or auth in ~/.vena/vena.json');
       }
+      const model = overrideModel ?? cfg?.model ?? 'claude-sonnet-4-5-20250929';
       return {
         provider: new AnthropicProvider({
-          apiKey: cfg.apiKey,
-          model: cfg.model,
-          baseUrl: cfg.baseUrl,
+          apiKey: cfg?.apiKey,
+          model,
+          baseUrl: cfg?.baseUrl,
+          auth: cfg?.auth as any,
         }),
-        model: cfg.model ?? 'claude-sonnet-4-5-20250929',
+        model,
+        providerName,
       };
     }
 
     case 'openai': {
       const cfg = config.providers.openai;
-      if (!cfg?.apiKey) {
-        throw new Error('OpenAI API key not configured. Set providers.openai.apiKey in ~/.vena/vena.json');
+      if (!cfg?.apiKey && !cfg?.auth) {
+        throw new Error('OpenAI not configured. Set providers.openai.apiKey or auth in ~/.vena/vena.json');
       }
+      const model = overrideModel ?? cfg?.model ?? 'gpt-4o';
       return {
         provider: new OpenAIProvider({
-          apiKey: cfg.apiKey,
-          model: cfg.model,
-          baseUrl: cfg.baseUrl,
+          apiKey: cfg?.apiKey,
+          model,
+          baseUrl: cfg?.baseUrl,
+          auth: cfg?.auth as any,
         }),
-        model: cfg.model ?? 'gpt-4o',
+        model,
+        providerName,
       };
     }
 
     case 'gemini': {
       const cfg = config.providers.gemini;
-      if (!cfg?.apiKey) {
-        throw new Error('Gemini API key not configured. Set providers.gemini.apiKey in ~/.vena/vena.json');
+      if (!cfg?.apiKey && !cfg?.auth) {
+        throw new Error('Gemini not configured. Set providers.gemini.apiKey or auth in ~/.vena/vena.json');
       }
+      const model = overrideModel ?? cfg?.model ?? 'gemini-2.0-flash';
       return {
         provider: new GeminiProvider({
-          apiKey: cfg.apiKey,
-          model: cfg.model,
+          apiKey: cfg?.apiKey,
+          model,
+          auth: cfg?.auth as any,
         }),
-        model: cfg.model ?? 'gemini-2.0-flash',
+        model,
+        providerName,
       };
     }
 
     case 'ollama': {
       const cfg = config.providers.ollama;
+      const model = overrideModel ?? cfg?.model ?? 'llama3';
       return {
         provider: new OllamaProvider({
           baseUrl: cfg?.baseUrl,
-          model: cfg?.model,
+          model,
         }),
-        model: cfg?.model ?? 'llama3',
+        model,
+        providerName,
       };
     }
 
     default:
-      throw new Error(`Unknown provider "${defaultProvider}". Supported: anthropic, openai, gemini, ollama`);
+      throw new Error(`Unknown provider "${providerName}". Supported: anthropic, openai, gemini, ollama`);
   }
 }
 
@@ -116,9 +138,10 @@ function makeMessage(role: 'user' | 'assistant', content: string): Message {
 
 export const chatCommand = new Command('chat')
   .description('Start an interactive chat session with your agent')
-  .option('-m, --model <model>', 'Override the model to use')
+  .option('-m, --model <model>', 'Model to use (e.g. claude-opus-4-6, gpt-4o, gemini-2.0-flash)')
+  .option('-p, --provider <name>', 'Provider to use (anthropic, openai, gemini, ollama)')
   .option('-s, --system <prompt>', 'Set a custom system prompt')
-  .action(async (opts: { model?: string; system?: string }) => {
+  .action(async (opts: { model?: string; provider?: string; system?: string }) => {
     // Load config and create provider
     let config: VenaConfig;
     try {
@@ -130,47 +153,15 @@ export const chatCommand = new Command('chat')
 
     let provider: LLMProvider;
     let modelName: string;
+    let providerName: string;
     try {
-      const result = createProvider(config);
+      const result = createProvider(config, opts.provider, opts.model);
       provider = result.provider;
-      modelName = opts.model ?? result.model;
+      modelName = result.model;
+      providerName = result.providerName;
     } catch (err) {
       console.error(colors.error(`\n  ${err instanceof Error ? err.message : String(err)}\n`));
       process.exit(1);
-    }
-
-    // If the user overrode the model via --model, we need to recreate the provider
-    // with that model. For simplicity, we re-create using the same provider type.
-    if (opts.model) {
-      try {
-        const defaultProvider = config.providers.default;
-        switch (defaultProvider) {
-          case 'anthropic': {
-            const cfg = config.providers.anthropic!;
-            provider = new AnthropicProvider({ apiKey: cfg.apiKey!, model: opts.model, baseUrl: cfg.baseUrl });
-            break;
-          }
-          case 'openai': {
-            const cfg = config.providers.openai!;
-            provider = new OpenAIProvider({ apiKey: cfg.apiKey!, model: opts.model, baseUrl: cfg.baseUrl });
-            break;
-          }
-          case 'gemini': {
-            const cfg = config.providers.gemini!;
-            provider = new GeminiProvider({ apiKey: cfg.apiKey!, model: opts.model });
-            break;
-          }
-          case 'ollama': {
-            const cfg = config.providers.ollama;
-            provider = new OllamaProvider({ baseUrl: cfg?.baseUrl, model: opts.model });
-            break;
-          }
-        }
-        modelName = opts.model;
-      } catch (err) {
-        console.error(colors.error(`\n  Failed to override model: ${err instanceof Error ? err.message : String(err)}\n`));
-        process.exit(1);
-      }
     }
 
     const systemPrompt = opts.system ?? config.agents.registry[0]?.persona ?? 'You are a helpful assistant.';
