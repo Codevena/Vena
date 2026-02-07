@@ -1,5 +1,18 @@
 import type { Skill } from '@vena/shared';
 
+function escapeXml(str: string): string {
+  return str.replace(/[<>&"']/g, (c) => {
+    const map: Record<string, string> = {
+      '<': '&lt;',
+      '>': '&gt;',
+      '&': '&amp;',
+      '"': '&quot;',
+      "'": '&apos;',
+    };
+    return map[c] ?? c;
+  });
+}
+
 export class SkillInjector {
   generate(skills: Skill[]): string {
     if (skills.length === 0) {
@@ -8,8 +21,10 @@ export class SkillInjector {
 
     const entries = skills
       .map((skill) => {
-        const triggers = skill.triggers.join(', ');
-        return `<skill name="${skill.name}" triggers="${triggers}">${skill.description}</skill>`;
+        const name = escapeXml(skill.name);
+        const triggers = escapeXml(skill.triggers.join(', '));
+        const description = escapeXml(skill.description);
+        return `<skill name="${name}" triggers="${triggers}">${description}</skill>`;
       })
       .join('\n');
 

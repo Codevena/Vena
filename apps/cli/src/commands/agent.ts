@@ -125,6 +125,7 @@ agentCommand
       capabilities: response.capabilities,
       trustLevel: response.trustLevel,
       channels: [],
+      character: 'nova',
     };
 
     const rawConfig = loadRawConfig();

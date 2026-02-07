@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { InboundMessage } from '@vena/shared';
+import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { createLogger } from '@vena/shared';
 
@@ -10,25 +11,32 @@ export interface OpenAICompatOptions {
   defaultModel?: string;
 }
 
-interface ChatCompletionRequest {
-  model?: string;
-  messages: Array<{ role: string; content: string }>;
-  stream?: boolean;
-  temperature?: number;
-  max_tokens?: number;
-}
+const chatCompletionSchema = z.object({
+  model: z.string().optional(),
+  messages: z.array(z.object({
+    role: z.string(),
+    content: z.string(),
+  })).min(1, 'messages must not be empty'),
+  stream: z.boolean().optional().default(false),
+  temperature: z.number().optional(),
+  max_tokens: z.number().optional(),
+});
 
 export async function openaiCompatAPI(fastify: FastifyInstance, options: OpenAICompatOptions): Promise<void> {
   const { onMessage, defaultModel = 'vena-agent' } = options;
 
-  fastify.post<{ Body: ChatCompletionRequest }>('/v1/chat/completions', async (request, reply) => {
-    const { model, messages, stream = false, temperature, max_tokens } = request.body;
-
-    if (!messages || messages.length === 0) {
+  fastify.post('/v1/chat/completions', async (request, reply) => {
+    const parsed = chatCompletionSchema.safeParse(request.body);
+    if (!parsed.success) {
       return reply.status(400).send({
-        error: { message: 'messages is required and must not be empty', type: 'invalid_request_error' },
+        error: {
+          message: parsed.error.issues.map(i => i.message).join('; '),
+          type: 'invalid_request_error',
+        },
       });
     }
+
+    const { model, messages, stream, temperature, max_tokens } = parsed.data;
 
     // Extract the last user message
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');

@@ -17,6 +17,12 @@ export class SkillParser {
       if (!frontmatter.name) {
         throw new SkillError('Missing required field: name', filePath);
       }
+      if (!/^[a-zA-Z0-9_-]+$/.test(frontmatter.name)) {
+        throw new SkillError(
+          `Invalid skill name "${frontmatter.name}": must contain only alphanumeric characters, hyphens, and underscores`,
+          filePath,
+        );
+      }
       if (!frontmatter.description) {
         throw new SkillError('Missing required field: description', filePath);
       }
@@ -27,12 +33,31 @@ export class SkillParser {
         throw new SkillError('Missing or invalid field: triggers', filePath);
       }
 
+      const systemPrompt = body.trim();
+
+      if (systemPrompt.length > 10_000) {
+        throw new SkillError(
+          `System prompt exceeds 10,000 character limit (${systemPrompt.length} chars)`,
+          filePath,
+        );
+      }
+
+      const suspiciousPatterns = ['</skill>', '</available_skills>', '<system>'];
+      for (const pattern of suspiciousPatterns) {
+        if (systemPrompt.toLowerCase().includes(pattern.toLowerCase())) {
+          throw new SkillError(
+            `System prompt contains suspicious content: "${pattern}" — possible prompt injection`,
+            filePath,
+          );
+        }
+      }
+
       return {
         name: frontmatter.name,
         description: frontmatter.description,
         version: frontmatter.version,
         triggers: frontmatter.triggers,
-        systemPrompt: body.trim(),
+        systemPrompt,
         enabled: true,
         source,
         path: filePath,

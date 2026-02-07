@@ -6,6 +6,8 @@ import { SessionStore } from './session-store.js';
 import { LaneQueue } from './lane-queue.js';
 import { controlAPI, type ControlAPIOptions } from './api/control.js';
 import { openaiCompatAPI, type OpenAICompatOptions } from './api/openai-compat.js';
+import { authMiddleware, type AuthConfig } from './middleware/auth.js';
+import { RateLimiter, type RateLimitConfig } from './middleware/rate-limit.js';
 
 const log = createLogger('gateway:server');
 
@@ -13,6 +15,16 @@ export interface GatewayConfig {
   port: number;
   host: string;
   sessionsPath?: string;
+  auth?: {
+    enabled: boolean;
+    apiKeys: string[];
+  };
+  rateLimit?: {
+    enabled: boolean;
+    windowMs: number;
+    maxRequests: number;
+  };
+  maxMessageSize?: number;
 }
 
 type MessageHandler = (msg: InboundMessage) => Promise<{ text?: string }>;
@@ -22,6 +34,7 @@ interface WebSocketMessage {
   type: 'message';
   content: string;
   sessionKey?: string;
+  character?: string;
 }
 
 export class GatewayServer {
@@ -30,6 +43,8 @@ export class GatewayServer {
   private wss: WebSocketServer | null = null;
   private sessionStore: SessionStore;
   private laneQueue: LaneQueue;
+  private rateLimiter: RateLimiter;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private startedAt: Date;
   private messageHandler: MessageHandler | null = null;
   private agentsProvider: AgentsProvider | null = null;
@@ -40,8 +55,12 @@ export class GatewayServer {
     this.startedAt = new Date();
     this.sessionStore = new SessionStore(config.sessionsPath ?? 'sessions.json');
     this.laneQueue = new LaneQueue();
+    this.rateLimiter = new RateLimiter(config.rateLimit ?? { enabled: true, windowMs: 60000, maxRequests: 120 });
 
-    this.fastify = Fastify({ logger: false });
+    this.fastify = Fastify({
+      logger: false,
+      bodyLimit: config.maxMessageSize ?? 102400,
+    });
   }
 
   onMessage(handler: MessageHandler): void {
@@ -81,6 +100,25 @@ export class GatewayServer {
       return { status: 'ok', uptime: Math.floor((Date.now() - this.startedAt.getTime()) / 1000) };
     });
 
+    // Register auth middleware (excludes health check)
+    const authConfig: AuthConfig = {
+      enabled: this.config.auth?.enabled ?? false,
+      apiKeys: this.config.auth?.apiKeys ?? [],
+      excludePaths: ['/health'],
+    };
+    await this.fastify.register(authMiddleware(authConfig));
+
+    // HTTP rate limiting hook
+    this.fastify.addHook('onRequest', async (request, reply) => {
+      const result = this.rateLimiter.checkHttp(request.ip);
+      if (!result.allowed) {
+        return reply
+          .status(429)
+          .header('Retry-After', String(result.retryAfter ?? 60))
+          .send({ error: 'Too many requests', retryAfter: result.retryAfter });
+      }
+    });
+
     // Register control API
     const controlOpts: ControlAPIOptions = {
       sessionStore: this.sessionStore,
@@ -99,6 +137,9 @@ export class GatewayServer {
       await this.fastify.register(openaiCompatAPI, openaiOpts);
     }
 
+    // Start rate limiter cleanup interval (every 60s)
+    this.cleanupInterval = setInterval(() => this.rateLimiter.cleanup(), 60000);
+
     // Start HTTP server
     await this.fastify.listen({ port: this.config.port, host: this.config.host });
 
@@ -106,20 +147,40 @@ export class GatewayServer {
     const server = this.fastify.server;
     this.wss = new WebSocketServer({ server });
 
+    const maxMessageSize = this.config.maxMessageSize ?? 102400;
+
     this.wss.on('connection', (ws: WebSocket) => {
       const connectionId = nanoid(12);
+      const sessionKey = `ws-${connectionId}`;
       log.info({ connectionId }, 'WebSocket client connected');
 
       ws.on('message', (data: Buffer) => {
         try {
+          // Check message size
+          if (data.length > maxMessageSize) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Message too large' }));
+            }
+            return;
+          }
+
+          // Check rate limit
+          const rateCheck = this.rateLimiter.checkWs(connectionId);
+          if (!rateCheck.allowed) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Too many messages' }));
+            }
+            return;
+          }
+
           const msg = JSON.parse(data.toString()) as WebSocketMessage;
           if (msg.type === 'message' && msg.content) {
-            const sessionKey = msg.sessionKey ?? `ws-${connectionId}`;
             const inbound: InboundMessage = {
               channelName: 'websocket',
               sessionKey,
               userId: connectionId,
               content: msg.content,
+              raw: msg.character ? { character: msg.character } : undefined,
             };
 
             this.emit('message', inbound);
@@ -165,6 +226,11 @@ export class GatewayServer {
 
   async stop(): Promise<void> {
     log.info('Shutting down gateway server');
+
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
 
     if (this.wss) {
       for (const client of this.wss.clients) {

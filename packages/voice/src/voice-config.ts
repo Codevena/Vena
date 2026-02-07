@@ -1,4 +1,4 @@
-import type { VoiceConfig } from '@vena/shared';
+import type { VoiceConfig, Character } from '@vena/shared';
 import { ElevenLabsClient } from 'elevenlabs';
 import { VoiceError } from '@vena/shared';
 
@@ -16,8 +16,24 @@ export class VoiceConfigManager {
     this.elevenLabsApiKey = elevenLabsApiKey;
   }
 
-  getVoiceForAgent(agentId: string): VoiceConfig | undefined {
-    return this.configs.get(agentId);
+  getVoiceForAgent(agentId: string, character?: Character): VoiceConfig | undefined {
+    // Agent-specific override takes precedence
+    const agentConfig = this.configs.get(agentId);
+    if (agentConfig) return agentConfig;
+
+    // Fall back to character's default TTS voice
+    if (character?.ttsVoiceId) {
+      return {
+        ttsProvider: 'elevenlabs',
+        voiceId: character.ttsVoiceId,
+        model: 'eleven_multilingual_v2',
+        stability: 0.5,
+        similarityBoost: 0.75,
+        outputFormat: 'mp3',
+      };
+    }
+
+    return undefined;
   }
 
   setVoiceForAgent(agentId: string, config: VoiceConfig): void {

@@ -1,4 +1,5 @@
-import type { AgentProfile } from '@vena/shared';
+import type { AgentProfile, Character } from '@vena/shared';
+import { CHARACTERS } from '@vena/shared';
 import { nanoid } from 'nanoid';
 
 export type AgentTemplate = 'coder' | 'researcher' | 'writer' | 'reviewer' | 'devops';
@@ -10,6 +11,7 @@ interface AgentConfig {
   provider?: string;
   model?: string;
   trustLevel?: AgentProfile['trustLevel'];
+  characterId?: string;
 }
 
 const TEMPLATES: Record<AgentTemplate, Omit<AgentConfig, 'name'>> = {
@@ -19,6 +21,7 @@ const TEMPLATES: Record<AgentTemplate, Omit<AgentConfig, 'name'>> = {
     provider: 'anthropic',
     model: 'claude-sonnet-4-5-20250929',
     trustLevel: 'full',
+    characterId: 'ghost',
   },
   researcher: {
     persona: 'Thorough research analyst skilled at finding and synthesizing information.',
@@ -26,6 +29,7 @@ const TEMPLATES: Record<AgentTemplate, Omit<AgentConfig, 'name'>> = {
     provider: 'anthropic',
     model: 'claude-sonnet-4-5-20250929',
     trustLevel: 'limited',
+    characterId: 'sage',
   },
   writer: {
     persona: 'Creative writer and editor producing clear, engaging content.',
@@ -33,6 +37,7 @@ const TEMPLATES: Record<AgentTemplate, Omit<AgentConfig, 'name'>> = {
     provider: 'anthropic',
     model: 'claude-sonnet-4-5-20250929',
     trustLevel: 'limited',
+    characterId: 'spark',
   },
   reviewer: {
     persona: 'Meticulous code reviewer focused on quality, correctness, and best practices.',
@@ -40,6 +45,7 @@ const TEMPLATES: Record<AgentTemplate, Omit<AgentConfig, 'name'>> = {
     provider: 'anthropic',
     model: 'claude-sonnet-4-5-20250929',
     trustLevel: 'limited',
+    characterId: 'atlas',
   },
   devops: {
     persona: 'Infrastructure and deployment specialist ensuring reliable, scalable systems.',
@@ -47,6 +53,7 @@ const TEMPLATES: Record<AgentTemplate, Omit<AgentConfig, 'name'>> = {
     provider: 'anthropic',
     model: 'claude-sonnet-4-5-20250929',
     trustLevel: 'full',
+    characterId: 'nova',
   },
 };
 

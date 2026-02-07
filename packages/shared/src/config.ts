@@ -31,6 +31,7 @@ const agentConfigSchema = z.object({
   trustLevel: z.enum(['full', 'limited', 'readonly']).default('full'),
   channels: z.array(z.string()).default([]),
   voiceId: z.string().optional(),
+  character: z.string().default('nova'),
 });
 
 export const venaConfigSchema = z.object({
@@ -58,6 +59,16 @@ export const venaConfigSchema = z.object({
   gateway: z.object({
     port: z.number().default(18789),
     host: z.string().default('127.0.0.1'),
+    auth: z.object({
+      enabled: z.boolean().default(false),
+      apiKeys: z.array(z.string()).default([]),
+    }).default({}),
+    rateLimit: z.object({
+      enabled: z.boolean().default(true),
+      windowMs: z.number().default(60000),
+      maxRequests: z.number().default(120),
+    }).default({}),
+    maxMessageSize: z.number().default(102400),
   }).default({}),
 
   agents: z.object({
@@ -71,6 +82,7 @@ export const venaConfigSchema = z.object({
       provider: 'anthropic',
       capabilities: ['general', 'coding', 'research'],
       trustLevel: 'full',
+      character: 'nova',
     }]),
     mesh: z.object({
       enabled: z.boolean().default(true),
@@ -95,10 +107,24 @@ export const venaConfigSchema = z.object({
     }).default({}),
   }).default({}),
 
+  security: z.object({
+    defaultTrustLevel: z.enum(['full', 'limited', 'readonly']).default('limited'),
+    pathPolicy: z.object({
+      blockedPatterns: z.array(z.string()).default(['.env', '.ssh', '.aws', '.git/config']),
+    }).default({}),
+    shell: z.object({
+      allowedCommands: z.array(z.string()).default(['git', 'npm', 'pnpm', 'node', 'npx', 'ls', 'cat', 'find', 'grep']),
+      envPassthrough: z.array(z.string()).default(['PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'NODE_ENV']),
+    }).default({}),
+    urlPolicy: z.object({
+      allowPrivateIPs: z.boolean().default(false),
+    }).default({}),
+  }).default({}),
+
   computer: z.object({
     shell: z.object({
       enabled: z.boolean().default(true),
-      allowedCommands: z.array(z.string()).default(['*']),
+      allowedCommands: z.array(z.string()).default(['git', 'npm', 'pnpm', 'node', 'npx', 'ls', 'find', 'grep']),
     }).default({}),
     browser: z.object({
       enabled: z.boolean().default(true),
@@ -144,6 +170,14 @@ export const venaConfigSchema = z.object({
     dirs: z.array(z.string()).default([]),
     managed: z.string().default('~/.vena/skills'),
   }).default({}),
+
+  userProfile: z.object({
+    name: z.string(),
+    preferredName: z.string().optional(),
+    language: z.string().default('en'),
+    timezone: z.string().optional(),
+    notes: z.string().optional(),
+  }).optional(),
 });
 
 export type VenaConfig = z.infer<typeof venaConfigSchema>;

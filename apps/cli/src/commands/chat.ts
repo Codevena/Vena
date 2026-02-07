@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import readline from 'node:readline';
 import type { Message } from '@vena/shared';
+import { getCharacter, CHARACTERS } from '@vena/shared';
 import type { LLMProvider } from '@vena/providers';
+import { SoulCompiler } from '@vena/core';
 import {
   colors,
   printLogo,
@@ -30,7 +32,8 @@ export const chatCommand = new Command('chat')
   .option('-m, --model <model>', 'Model to use (e.g. claude-opus-4-6, gpt-4o, gemini-2.0-flash)')
   .option('-p, --provider <name>', 'Provider to use (anthropic, openai, gemini, ollama)')
   .option('-s, --system <prompt>', 'Set a custom system prompt')
-  .action(async (opts: { model?: string; provider?: string; system?: string }) => {
+  .option('-c, --character <id>', 'Character to use (nova, sage, spark, ghost, atlas)')
+  .action(async (opts: { model?: string; provider?: string; system?: string; character?: string }) => {
     // Load config and create provider
     let config;
     try {
@@ -53,7 +56,17 @@ export const chatCommand = new Command('chat')
       process.exit(1);
     }
 
-    const systemPrompt = opts.system ?? config.agents.registry[0]?.persona ?? 'You are a helpful assistant.';
+    // Resolve character and compile soul prompt
+    const characterId = opts.character ?? config.agents.registry[0]?.character ?? 'nova';
+    const character = getCharacter(characterId);
+    let soulPrompt: string | undefined;
+    if (character) {
+      const compiler = new SoulCompiler();
+      soulPrompt = compiler.compile(character, config.userProfile);
+    }
+
+    const basePrompt = opts.system ?? config.agents.registry[0]?.persona ?? 'You are a helpful assistant.';
+    const systemPrompt = soulPrompt ? soulPrompt + '\n\n' + basePrompt : basePrompt;
 
     // Conversation state
     const messages: Message[] = [];
@@ -68,6 +81,7 @@ export const chatCommand = new Command('chat')
         [
           kvLine('Provider', provider.name, 14),
           kvLine('Model', modelName, 14),
+          kvLine('Character', character?.name ?? 'Default', 14),
           kvLine('Context', `${(provider.maxContextWindow / 1000).toFixed(0)}k tokens`, 14),
         ],
         { title: 'Chat Session', padding: 1 },
@@ -147,7 +161,8 @@ export const chatCommand = new Command('chat')
         messages.push(makeMessage('user', trimmed));
 
         // Stream LLM response
-        process.stdout.write('\n  ' + colors.secondary('vena') + colors.dim(' > '));
+        const agentLabel = character?.name.toLowerCase() ?? 'vena';
+        process.stdout.write('\n  ' + colors.secondary(agentLabel) + colors.dim(' > '));
 
         let responseText = '';
         isStreaming = true;

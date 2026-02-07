@@ -2,6 +2,7 @@ export { AgentLoop } from './agent/agent-loop.js';
 export type { AgentEvent, AgentLoopOptions } from './agent/agent-loop.js';
 export { ContextBuilder } from './agent/context-builder.js';
 export type { ContextBuildOptions, BuiltContext } from './agent/context-builder.js';
+export { SoulCompiler } from './agent/soul-compiler.js';
 export { ToolExecutor } from './agent/tool-executor.js';
 export { SessionManager } from './agent/session.js';
 
@@ -21,3 +22,5 @@ export { VectorSearch } from './memory/vector-search.js';
 export { Compactor } from './compaction/compactor.js';
 export type { SummarizeFn } from './compaction/compactor.js';
 export { Pruner } from './compaction/pruner.js';
+
+export * from './security/index.js';

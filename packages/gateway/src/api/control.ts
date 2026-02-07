@@ -1,7 +1,15 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import type { SessionStore } from '../session-store.js';
 import type { LaneQueue } from '../lane-queue.js';
 import type { InboundMessage } from '@vena/shared';
+
+const messageBodySchema = z.object({
+  content: z.string().min(1, 'content is required'),
+  channelName: z.string().optional(),
+  sessionKey: z.string().optional(),
+  userId: z.string().optional(),
+});
 
 export interface ControlAPIOptions {
   sessionStore: SessionStore;
@@ -43,28 +51,31 @@ export async function controlAPI(fastify: FastifyInstance, options: ControlAPIOp
     return { agents };
   });
 
-  fastify.post<{ Body: { channelName?: string; sessionKey?: string; userId?: string; content: string } }>(
-    '/api/message',
-    async (request, reply) => {
-      const { channelName = 'api', sessionKey = 'api-default', userId = 'api-user', content } = request.body;
-      if (!content) {
-        return reply.status(400).send({ error: 'content is required' });
-      }
-      if (!onMessage) {
-        return reply.status(503).send({ error: 'Message handler not configured' });
-      }
+  fastify.post('/api/message', async (request, reply) => {
+    const parsed = messageBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: 'Validation failed',
+        details: parsed.error.issues.map(i => ({ path: i.path.join('.'), message: i.message })),
+      });
+    }
 
-      const inbound: InboundMessage = {
-        channelName,
-        sessionKey,
-        userId,
-        content,
-      };
+    const { content, channelName = 'api', sessionKey = 'api-default', userId = 'api-user' } = parsed.data;
 
-      const response = await onMessage(inbound);
-      return { response };
-    },
-  );
+    if (!onMessage) {
+      return reply.status(503).send({ error: 'Message handler not configured' });
+    }
+
+    const inbound: InboundMessage = {
+      channelName,
+      sessionKey,
+      userId,
+      content,
+    };
+
+    const response = await onMessage(inbound);
+    return { response };
+  });
 
   fastify.delete<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
     const { id } = request.params;

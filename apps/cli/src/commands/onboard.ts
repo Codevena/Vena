@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { VenaConfig } from '@vena/shared';
+import { listCharacters } from '@vena/shared';
 import {
   colors,
   sleep,
@@ -193,7 +194,7 @@ async function showCompletion(config: {
 export const onboardCommand = new Command('onboard')
   .description('Interactive setup wizard for Vena')
   .action(async () => {
-    const totalSteps = 6;
+    const totalSteps = 8;
 
     // ── Welcome Screen ────────────────────────────────────────────────
     await showWelcome();
@@ -389,8 +390,94 @@ export const onboardCommand = new Command('onboard')
 
     const agentName = (nameResponse.agentName as string) || 'Vena';
 
-    // ── Step 4: Enable Channels & Telegram Token ──────────────────────
-    printStepHeader(5, totalSteps, 'Enable Channels', 'Choose which messaging channels to connect.');
+    // ── Step 5: Choose Character ────────────────────────────────────────
+    const characters = listCharacters();
+    const characterChoices = characters.map(c => ({
+      title: `${colors.primary('●')} ${c.name.padEnd(8)} ${colors.dim('─ ' + c.tagline)}`,
+      value: c.id,
+    }));
+
+    printStepHeader(5, totalSteps, 'Choose Character', 'Pick a personality for your agent.');
+
+    const characterResponse = await prompts({
+      type: 'select',
+      name: 'character',
+      message: colors.primary('▸') + ' Character',
+      choices: characterChoices,
+    }, {
+      onCancel: () => {
+        console.log();
+        console.log(colors.secondary('  Setup cancelled.'));
+        console.log();
+        process.exit(0);
+      },
+    });
+
+    const selectedCharacter = (characterResponse.character as string) || 'nova';
+    const charObj = characters.find(c => c.id === selectedCharacter);
+    console.log(`  ${colors.success('✓')} ${colors.dim(`Character: ${charObj?.name ?? selectedCharacter}`)}`);
+
+    // ── Step 6: User Profile ────────────────────────────────────────────
+    printStepHeader(6, totalSteps, 'About You', 'Tell your agent a bit about yourself (optional).');
+
+    const userNameResponse = await prompts({
+      type: 'text',
+      name: 'userName',
+      message: colors.primary('▸') + ' Your Name',
+      hint: 'So your agent knows what to call you',
+    }, {
+      onCancel: () => {
+        console.log();
+        console.log(colors.secondary('  Setup cancelled.'));
+        console.log();
+        process.exit(0);
+      },
+    });
+
+    const userName = (userNameResponse.userName as string) || '';
+
+    let userTimezone: string | undefined;
+    let userLanguage = 'en';
+
+    if (userName) {
+      const langResponse = await prompts({
+        type: 'text',
+        name: 'language',
+        message: colors.primary('▸') + ' Preferred Language',
+        initial: 'en',
+        hint: 'e.g. en, de, fr, es, ja',
+      }, {
+        onCancel: () => {
+          console.log();
+          console.log(colors.secondary('  Setup cancelled.'));
+          console.log();
+          process.exit(0);
+        },
+      });
+      userLanguage = (langResponse.language as string) || 'en';
+
+      const tzResponse = await prompts({
+        type: 'text',
+        name: 'timezone',
+        message: colors.primary('▸') + ' Timezone',
+        hint: 'e.g. America/New_York, Europe/Berlin',
+      }, {
+        onCancel: () => {
+          console.log();
+          console.log(colors.secondary('  Setup cancelled.'));
+          console.log();
+          process.exit(0);
+        },
+      });
+      userTimezone = (tzResponse.timezone as string) || undefined;
+
+      console.log(`  ${colors.success('✓')} ${colors.dim(`Profile saved for ${userName}`)}`);
+    } else {
+      console.log(`  ${colors.dim('Skipped — you can set this later in ~/.vena/vena.json')}`);
+    }
+
+    // ── Step 7: Enable Channels & Telegram Token ──────────────────────
+    printStepHeader(7, totalSteps, 'Enable Channels', 'Choose which messaging channels to connect.');
 
     const channelResponse = await prompts({
       type: 'multiselect',
@@ -438,8 +525,8 @@ export const onboardCommand = new Command('onboard')
       }
     }
 
-    // ── Step 5: Feature Selection ─────────────────────────────────────
-    printStepHeader(6, totalSteps, 'Enable Features', 'Select which capabilities to enable for your agent.');
+    // ── Step 8: Feature Selection ─────────────────────────────────────
+    printStepHeader(8, totalSteps, 'Enable Features', 'Select which capabilities to enable for your agent.');
 
     const featureResponse = await prompts({
       type: 'multiselect',
@@ -504,7 +591,13 @@ export const onboardCommand = new Command('onboard')
           enabled: channels.includes('whatsapp'),
         },
       },
-      gateway: { port: 18789, host: '127.0.0.1' },
+      gateway: {
+        port: 18789,
+        host: '127.0.0.1',
+        auth: { enabled: false, apiKeys: [] },
+        rateLimit: { enabled: true, windowMs: 60000, maxRequests: 120 },
+        maxMessageSize: 102400,
+      },
       agents: {
         defaults: { maxConcurrent: 4 },
         registry: [{
@@ -515,6 +608,7 @@ export const onboardCommand = new Command('onboard')
           capabilities: ['general', 'coding', 'research'],
           trustLevel: 'full',
           channels,
+          character: selectedCharacter,
         }],
         mesh: {
           enabled: true,
@@ -534,8 +628,17 @@ export const onboardCommand = new Command('onboard')
         },
         sharedMemory: { enabled: enableMemory, crossAgentSearch: enableMemory },
       },
+      security: {
+        defaultTrustLevel: 'limited' as const,
+        pathPolicy: { blockedPatterns: ['.env', '.ssh', '.aws', '.git/config'] },
+        shell: {
+          allowedCommands: ['git', 'npm', 'pnpm', 'node', 'npx', 'ls', 'cat', 'find', 'grep'],
+          envPassthrough: ['PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'NODE_ENV'],
+        },
+        urlPolicy: { allowPrivateIPs: false },
+      },
       computer: {
-        shell: { enabled: enableComputer, allowedCommands: ['*'] },
+        shell: { enabled: enableComputer, allowedCommands: ['git', 'npm', 'pnpm', 'node', 'npx', 'ls', 'find', 'grep'] },
         browser: { enabled: enableComputer, headless: false },
         keyboard: { enabled: false },
         screenshot: { enabled: enableComputer },
@@ -547,6 +650,13 @@ export const onboardCommand = new Command('onboard')
         autoVoiceReply: enableVoice,
       },
       skills: { dirs: [], managed: '~/.vena/skills' },
+      ...(userName ? {
+        userProfile: {
+          name: userName,
+          language: userLanguage,
+          ...(userTimezone ? { timezone: userTimezone } : {}),
+        },
+      } : {}),
     };
 
     // Create config directory

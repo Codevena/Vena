@@ -1,12 +1,12 @@
 import type { Tool, ToolContext, ToolResult } from '@vena/shared';
 import { spawn } from 'node:child_process';
 
-const DANGEROUS_PATTERNS = [
+const MAX_OUTPUT_BYTES = 1024 * 1024; // 1MB
+
+const CATASTROPHIC_PATTERNS = [
   /rm\s+-rf\s+\/(?:\s|$)/,
   /mkfs\./,
   /dd\s+if=.*of=\/dev\//,
-  />\s*\/dev\/sd/,
-  /chmod\s+-R\s+777\s+\//,
 ];
 
 export class BashTool implements Tool {
@@ -22,41 +22,63 @@ export class BashTool implements Tool {
     required: ['command'],
   };
 
+  private envPassthrough?: string[];
+
+  constructor(options?: { envPassthrough?: string[] }) {
+    this.envPassthrough = options?.envPassthrough;
+  }
+
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const command = input['command'] as string;
     const timeout = (input['timeout'] as number) ?? 30000;
     const cwd = (input['cwd'] as string) ?? (context.workspacePath || process.cwd());
 
-    // Safety check
-    for (const pattern of DANGEROUS_PATTERNS) {
+    for (const pattern of CATASTROPHIC_PATTERNS) {
       if (pattern.test(command)) {
         return {
-          content: `Command blocked for safety: matches dangerous pattern`,
+          content: `Command blocked for safety: matches catastrophic pattern`,
           isError: true,
         };
       }
     }
 
+    const env = this.buildEnv();
+
     return new Promise<ToolResult>((resolve) => {
       const proc = spawn('bash', ['-c', command], {
         cwd,
         timeout,
-        env: { ...process.env },
+        env,
       });
 
       let stdout = '';
       let stderr = '';
+      let totalBytes = 0;
+      let truncated = false;
 
       proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString();
+        totalBytes += data.length;
+        if (totalBytes <= MAX_OUTPUT_BYTES) {
+          stdout += data.toString();
+        } else if (!truncated) {
+          truncated = true;
+        }
       });
 
       proc.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
+        totalBytes += data.length;
+        if (totalBytes <= MAX_OUTPUT_BYTES) {
+          stderr += data.toString();
+        } else if (!truncated) {
+          truncated = true;
+        }
       });
 
       proc.on('close', (code) => {
-        const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
+        let output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
+        if (truncated) {
+          output += '\n[output truncated — exceeded 1MB limit]';
+        }
         resolve({
           content: output || '(no output)',
           isError: code !== 0,
@@ -71,5 +93,18 @@ export class BashTool implements Tool {
         });
       });
     });
+  }
+
+  private buildEnv(): Record<string, string> {
+    if (!this.envPassthrough) {
+      return { ...process.env } as Record<string, string>;
+    }
+    const env: Record<string, string> = {};
+    for (const key of this.envPassthrough) {
+      if (process.env[key] !== undefined) {
+        env[key] = process.env[key]!;
+      }
+    }
+    return env;
   }
 }

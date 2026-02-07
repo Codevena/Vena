@@ -2,6 +2,7 @@ import type { Message, Session } from '@vena/shared';
 
 export interface ContextBuildOptions {
   systemPrompt: string;
+  soulPrompt?: string;
   skills?: string;
   memoryContext?: string;
   maxTokens?: number;
@@ -18,7 +19,11 @@ export class ContextBuilder {
     const maxChars = maxTokens * 4; // rough estimate: 1 token ~ 4 chars
 
     // Assemble system prompt
-    let systemPrompt = options.systemPrompt;
+    let systemPrompt = '';
+    if (options.soulPrompt) {
+      systemPrompt = options.soulPrompt + '\n\n';
+    }
+    systemPrompt += options.systemPrompt;
 
     if (options.memoryContext) {
       systemPrompt += `\n\n<memory>\n${options.memoryContext}\n</memory>`;
