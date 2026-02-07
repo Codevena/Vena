@@ -1,11 +1,22 @@
+import type { Message } from '@vena/shared';
 import { MemoryError, createLogger } from '@vena/shared';
 import { DailyLog } from './daily-log.js';
 import { LongTermMemory } from './long-term.js';
 import { TranscriptStore } from './transcript.js';
 import * as path from 'node:path';
-import * as fs from 'node:fs/promises';
 
 const logger = createLogger('memory-manager');
+
+export interface SemanticMemoryProvider {
+  recall(query: string, maxTokens: number): Promise<string>;
+  ingest(messages: Message[], agentId: string): Promise<void>;
+}
+
+export interface MemoryManagerOptions {
+  workspacePath: string;
+  agentId: string;
+  semantic?: SemanticMemoryProvider;
+}
 
 export class MemoryManager {
   private dailyLog: DailyLog;
@@ -13,10 +24,12 @@ export class MemoryManager {
   private transcripts: TranscriptStore;
   private workspacePath: string;
   private agentId: string;
+  private semantic?: SemanticMemoryProvider;
 
-  constructor(opts: { workspacePath: string; agentId: string }) {
+  constructor(opts: MemoryManagerOptions) {
     this.workspacePath = opts.workspacePath;
     this.agentId = opts.agentId;
+    this.semantic = opts.semantic;
 
     const memoryDir = path.join(opts.workspacePath, 'memory', opts.agentId);
     this.dailyLog = new DailyLog(path.join(memoryDir, 'daily'));
@@ -33,18 +46,39 @@ export class MemoryManager {
     }
   }
 
+  async ingestMessages(messages: Message[]): Promise<void> {
+    if (!this.semantic) return;
+    try {
+      await this.semantic.ingest(messages, this.agentId);
+    } catch (err) {
+      logger.warn({ error: err }, 'Semantic ingest failed (non-critical)');
+    }
+  }
+
   async getRelevantContext(query: string, maxTokens: number): Promise<string> {
     const maxChars = maxTokens * 4;
     const parts: string[] = [];
 
+    // Semantic memory first (richest context)
+    if (this.semantic && query) {
+      try {
+        const semanticContext = await this.semantic.recall(query, Math.floor(maxTokens / 2));
+        if (semanticContext) {
+          parts.push(semanticContext);
+        }
+      } catch (err) {
+        logger.warn({ error: err }, 'Semantic recall failed, falling back to flat memory');
+      }
+    }
+
     try {
-      // Get long-term memory first (highest priority)
+      // Long-term memory
       const longTermContent = await this.longTerm.read();
       if (longTermContent) {
         parts.push(`## Long-term Memory\n${longTermContent}`);
       }
 
-      // Get today's log
+      // Today's log
       const todayLog = await this.dailyLog.read();
       if (todayLog) {
         parts.push(`## Today's Log\n${todayLog}`);

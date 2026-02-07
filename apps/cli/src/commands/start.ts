@@ -1,13 +1,28 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'node:fs';
-import type { VenaConfig, InboundMessage, Message, Session } from '@vena/shared';
+import path from 'node:path';
+import type { VenaConfig, InboundMessage, Message, Session, OutboundMessage, MediaAttachment } from '@vena/shared';
 import { createLogger } from '@vena/shared';
+import type { Tool } from '@vena/shared';
 import { GatewayServer } from '@vena/gateway';
 import { TelegramChannel } from '@vena/channels';
 import { WhatsAppChannel } from '@vena/channels';
-import { AgentLoop } from '@vena/core';
-import { MemoryManager } from '@vena/core';
+import {
+  AgentLoop,
+  MemoryManager,
+  BashTool,
+  ReadTool,
+  WriteTool,
+  EditTool,
+  WebBrowseTool,
+  ToolGuard,
+} from '@vena/core';
+import type { SecurityPolicy, SemanticMemoryProvider } from '@vena/core';
+import { MemoryEngine } from '@vena/semantic-memory';
+import type { LLMProvider } from '@vena/providers';
+import { VoiceMessagePipeline, TextToSpeech, SpeechToText } from '@vena/voice';
+import { AgentRegistry, MessageBus, MeshNetwork } from '@vena/agents';
 import {
   loadConfig,
   createProvider,
@@ -28,6 +43,19 @@ import {
 } from '../ui/terminal.js';
 
 const log = createLogger('cli:start');
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+async function collectStreamText(provider: LLMProvider, prompt: string): Promise<string> {
+  let text = '';
+  for await (const chunk of provider.chat({
+    messages: [{ id: 'q', role: 'user', content: prompt, timestamp: new Date().toISOString() }],
+    maxTokens: 2048,
+  })) {
+    if (chunk.type === 'text' && chunk.text) text += chunk.text;
+  }
+  return text;
+}
 
 // ── Session Management ───────────────────────────────────────────────
 
@@ -86,12 +114,20 @@ async function showBootSequence(config: VenaConfig, results: BootResults): Promi
   if (results.whatsappConnected) {
     await spinnerLine('Connecting WhatsApp...', 300);
   }
-  if (config.memory.semanticMemory.enabled) {
+  if (results.semanticMemoryActive) {
     await spinnerLine('Knowledge Graph online...', 300);
   }
+  if (results.voiceEnabled) {
+    await spinnerLine('Voice pipeline active...', 300);
+  }
 
-  const agentName = config.agents.registry[0]?.name ?? 'Vena';
-  await spinnerLine(`Agent "${agentName}" active...`, 300);
+  for (const name of results.agentNames) {
+    await spinnerLine(`Agent "${name}" active...`, 200);
+  }
+
+  if (results.agentNames.length > 1) {
+    await spinnerLine('Mesh network connected...', 300);
+  }
 
   console.log();
   await sleep(200);
@@ -107,34 +143,38 @@ interface BootResults {
   providerName: string;
   modelName: string;
   messageCount: number;
+  toolNames: string[];
+  semanticMemoryActive: boolean;
+  voiceEnabled: boolean;
+  agentNames: string[];
 }
 
 function showDashboard(config: VenaConfig, results: BootResults): void {
-  const agents = config.agents.registry;
-  const agentCount = agents.length;
-  const agentName = agents[0]?.name ?? 'Vena';
+  const agentCount = results.agentNames.length;
+  const agentName = results.agentNames[0] ?? 'Vena';
 
   const enabledChannels: string[] = ['HTTP', 'WebSocket'];
   if (results.telegramConnected) enabledChannels.push('Telegram');
   if (results.whatsappConnected) enabledChannels.push('WhatsApp');
 
   const features: string[] = [];
-  if (config.memory.semanticMemory.enabled) features.push('Memory');
-  if (config.computer.shell.enabled) features.push('Shell');
-  if (config.computer.browser.enabled) features.push('Browser');
-  if (config.voice.autoVoiceReply) features.push('Voice');
+  if (results.semanticMemoryActive) features.push('KnowledgeGraph');
+  if (results.toolNames.length > 0) features.push(`${results.toolNames.length} Tools`);
+  if (results.voiceEnabled) features.push('Voice');
+  if (agentCount > 1) features.push('MeshNetwork');
 
   const dashLines = [
     colors.secondary(chalk.bold('VENA AGENT PLATFORM')),
     '',
     `${colors.dim('Port:')}        ${colors.white(String(results.gatewayPort))}     ${colors.dim('│')} ${colors.dim('Agents:')}  ${colors.white(String(agentCount))}`,
     `${colors.dim('Host:')}        ${colors.white(results.gatewayHost)}  ${colors.dim('│')} ${colors.dim('Status:')}  ${colors.success('Online')}`,
-    `${colors.dim('Memory:')}      ${config.memory.semanticMemory.enabled ? colors.success('Active') : colors.dim('Off')}       ${colors.dim('│')} ${colors.dim('Model:')}   ${colors.white(results.modelName)}`,
+    `${colors.dim('Memory:')}      ${results.semanticMemoryActive ? colors.success('Graph') : colors.dim('Flat')}       ${colors.dim('│')} ${colors.dim('Model:')}   ${colors.white(results.modelName)}`,
     `${colors.dim('Channels:')}    ${colors.white(enabledChannels.join(', '))}`,
     '',
     `${colors.dim('Provider:')}    ${colors.white(results.providerName)}`,
     `${colors.dim('Agent:')}       ${colors.primary(agentName)}`,
     `${colors.dim('Features:')}    ${colors.white(features.join(', ') || 'Default')}`,
+    `${colors.dim('Tools:')}       ${colors.white(results.toolNames.join(', ') || 'None')}`,
   ];
 
   const box = boxed(dashLines, {
@@ -149,10 +189,10 @@ function showDashboard(config: VenaConfig, results: BootResults): void {
 
   console.log();
 
-  if (agents.length > 0) {
+  if (agentCount > 0) {
     console.log(`  ${colors.secondary(chalk.bold('Active Agents'))}`);
     console.log();
-    for (const agent of agents) {
+    for (const agent of config.agents.registry) {
       const trustColor = agent.trustLevel === 'full' ? colors.success
         : agent.trustLevel === 'limited' ? colors.secondary
         : colors.dim;
@@ -213,13 +253,13 @@ export const startCommand = new Command('start')
 
     ensureDataDir();
 
-    // ── Create LLM provider ─────────────────────────────────────────
-    let provider;
+    // ── Create default LLM provider ──────────────────────────────────
+    let defaultProvider: LLMProvider;
     let modelName: string;
     let providerName: string;
     try {
       const result = createProvider(config);
-      provider = result.provider;
+      defaultProvider = result.provider;
       modelName = result.model;
       providerName = result.providerName;
     } catch (err) {
@@ -227,44 +267,231 @@ export const startCommand = new Command('start')
       process.exit(1);
     }
 
-    // ── Create Memory Manager ───────────────────────────────────────
-    const agentId = config.agents.registry[0]?.id ?? 'main';
-    const memoryManager = new MemoryManager({
-      workspacePath: DATA_DIR,
-      agentId,
-    });
+    // ── Semantic Memory (Knowledge Graph) ────────────────────────────
+    let memoryEngine: MemoryEngine | undefined;
+    let semanticProvider: SemanticMemoryProvider | undefined;
 
-    // ── Create Agent Loop ───────────────────────────────────────────
-    const systemPrompt = config.agents.registry[0]?.persona ?? 'You are a helpful AI assistant.';
-    const agentLoop = new AgentLoop({
-      provider,
-      tools: [],
-      systemPrompt,
-      memoryManager,
-      workspacePath: DATA_DIR,
-      options: {
-        maxIterations: 10,
-        maxTokens: 4096,
-        streamTools: true,
-      },
-    });
+    if (config.memory.semanticMemory.enabled) {
+      try {
+        const graphDir = path.join(DATA_DIR, 'semantic');
+        fs.mkdirSync(graphDir, { recursive: true });
+
+        memoryEngine = new MemoryEngine({
+          dbPath: path.join(graphDir, 'knowledge.db'),
+          indexDbPath: path.join(graphDir, 'index.db'),
+          extractFn: (prompt: string) => collectStreamText(defaultProvider, prompt),
+          summarizeFn: (texts: string[]) =>
+            collectStreamText(defaultProvider, `Summarize these related memories concisely:\n\n${texts.join('\n---\n')}`),
+        });
+
+        semanticProvider = {
+          async recall(query: string, maxTokens: number): Promise<string> {
+            const result = await memoryEngine!.recall(query, { maxTokens });
+            return result.context;
+          },
+          async ingest(messages: Message[], agentId: string): Promise<void> {
+            await memoryEngine!.ingest(messages, agentId);
+          },
+        };
+
+        log.info('Semantic memory (Knowledge Graph) initialized');
+      } catch (err) {
+        log.error({ error: err }, 'Failed to initialize semantic memory, falling back to flat memory');
+      }
+    }
+
+    // ── Voice Pipeline ───────────────────────────────────────────────
+    let voicePipeline: VoiceMessagePipeline | undefined;
+
+    const ttsKey = config.voice.tts.apiKey;
+    const sttKey = config.voice.stt.apiKey;
+
+    if (ttsKey && sttKey) {
+      try {
+        const tts = new TextToSpeech({
+          provider: config.voice.tts.provider,
+          apiKey: ttsKey,
+          defaultVoice: config.voice.tts.defaultVoice,
+          model: config.voice.tts.model,
+        });
+        const stt = new SpeechToText({
+          provider: config.voice.stt.provider,
+          apiKey: sttKey,
+          model: config.voice.stt.model,
+        });
+        voicePipeline = new VoiceMessagePipeline(tts, stt);
+        log.info('Voice pipeline initialized (TTS + STT)');
+      } catch (err) {
+        log.error({ error: err }, 'Failed to initialize voice pipeline');
+      }
+    }
+
+    // ── Build Tools + Security Guard ─────────────────────────────────
+    function buildToolsForTrust(trustLevel: 'full' | 'limited' | 'readonly'): { tools: Tool[]; guard: ToolGuard } {
+      const securityPolicy: SecurityPolicy = {
+        trustLevel,
+        allowedTools: ['*'],
+        allowedPaths: [DATA_DIR],
+        blockedPaths: config.security.pathPolicy.blockedPatterns,
+        allowedCommands: config.security.shell.allowedCommands,
+        maxOutputBytes: 1024 * 1024,
+        envPassthrough: config.security.shell.envPassthrough,
+        allowPrivateIPs: config.security.urlPolicy.allowPrivateIPs,
+      };
+
+      const guard = new ToolGuard(securityPolicy);
+      const tools: Tool[] = [
+        new ReadTool(),
+        new WebBrowseTool({ allowPrivateIPs: config.security.urlPolicy.allowPrivateIPs }),
+      ];
+
+      if (trustLevel !== 'readonly') {
+        tools.push(new WriteTool());
+        tools.push(new EditTool());
+      }
+
+      if (trustLevel === 'full' && config.computer.shell.enabled) {
+        tools.push(new BashTool({ envPassthrough: config.security.shell.envPassthrough }));
+      }
+
+      return { tools, guard };
+    }
+
+    // ── Create Agent Loops (per agent in registry) ───────────────────
+    const agentLoops = new Map<string, AgentLoop>();
+    const agentMemory = new Map<string, MemoryManager>();
+    const registry = config.agents.registry;
+
+    for (const agentConfig of registry) {
+      const trustLevel = (agentConfig.trustLevel ?? config.security.defaultTrustLevel ?? 'limited') as
+        'full' | 'limited' | 'readonly';
+
+      // Per-agent provider (may differ by provider/model)
+      let agentProvider: LLMProvider;
+      try {
+        const result = createProvider(config, agentConfig.provider, agentConfig.model);
+        agentProvider = result.provider;
+      } catch {
+        agentProvider = defaultProvider;
+      }
+
+      // Per-agent memory
+      const mm = new MemoryManager({
+        workspacePath: DATA_DIR,
+        agentId: agentConfig.id,
+        semantic: semanticProvider,
+      });
+      agentMemory.set(agentConfig.id, mm);
+
+      // Per-agent tools
+      const { tools, guard } = buildToolsForTrust(trustLevel);
+
+      const loop = new AgentLoop({
+        provider: agentProvider,
+        tools,
+        systemPrompt: agentConfig.persona ?? 'You are a helpful AI assistant.',
+        memoryManager: mm,
+        guard,
+        workspacePath: DATA_DIR,
+        options: {
+          maxIterations: 10,
+          maxTokens: 4096,
+          streamTools: true,
+        },
+      });
+
+      agentLoops.set(agentConfig.id, loop);
+      log.info({ agent: agentConfig.name, id: agentConfig.id, trustLevel, tools: tools.map(t => t.name) }, 'Agent loop created');
+    }
+
+    // Collect all tool names from the first agent for display
+    const firstAgentConfig = registry[0];
+    const firstTrust = (firstAgentConfig?.trustLevel ?? 'limited') as 'full' | 'limited' | 'readonly';
+    const displayTools = buildToolsForTrust(firstTrust).tools;
+
+    // ── Mesh Network (multi-agent routing) ───────────────────────────
+    let mesh: MeshNetwork | undefined;
+
+    if (registry.length > 1) {
+      const agentReg = new AgentRegistry();
+      const bus = new MessageBus();
+      mesh = new MeshNetwork(agentReg, bus);
+
+      for (const agentConfig of registry) {
+        mesh.addAgent({
+          id: agentConfig.id,
+          name: agentConfig.name,
+          persona: agentConfig.persona,
+          capabilities: agentConfig.capabilities,
+          provider: agentConfig.provider,
+          model: agentConfig.model ?? modelName,
+          status: 'active',
+          channels: agentConfig.channels,
+          trustLevel: agentConfig.trustLevel,
+          memoryNamespace: `agent-${agentConfig.id}`,
+        });
+      }
+
+      log.info({ agents: registry.length }, 'Mesh network initialized');
+    }
+
+    const defaultAgentId = firstAgentConfig?.id ?? 'main';
 
     // ── Message Handler ─────────────────────────────────────────────
     let totalMessages = 0;
 
+    function selectAgent(content: string): string {
+      if (!mesh || registry.length <= 1) return defaultAgentId;
+
+      try {
+        return mesh.routeMessage(content, defaultAgentId);
+      } catch {
+        return defaultAgentId;
+      }
+    }
+
     async function handleMessage(inbound: InboundMessage): Promise<{ text?: string }> {
       totalMessages++;
+
+      // Voice transcription: if inbound has audio/voice media, transcribe it
+      let content = inbound.content;
+      const hasVoice = inbound.media?.some(m => m.type === 'voice' || m.type === 'audio');
+
+      if (voicePipeline && hasVoice) {
+        const voiceMedia = inbound.media!.find(m => m.type === 'voice' || m.type === 'audio');
+        if (voiceMedia?.buffer) {
+          try {
+            const transcribed = await voicePipeline.processIncoming(voiceMedia.buffer, voiceMedia.mimeType);
+            if (transcribed) {
+              content = transcribed;
+              log.info({ original: !!inbound.content, transcribed: transcribed.slice(0, 100) }, 'Voice transcribed');
+            }
+          } catch (err) {
+            log.error({ error: err }, 'Voice transcription failed');
+          }
+        }
+      }
+
+      // Route to best agent
+      const targetAgentId = selectAgent(content);
+      const loop = agentLoops.get(targetAgentId) ?? agentLoops.get(defaultAgentId)!;
+      const mm = agentMemory.get(targetAgentId) ?? agentMemory.get(defaultAgentId)!;
+
+      if (targetAgentId !== defaultAgentId) {
+        log.info({ target: targetAgentId, content: content.slice(0, 80) }, 'Routed to agent');
+      }
+
       const session = getOrCreateSession(
         inbound.sessionKey,
         inbound.channelName,
         inbound.userId,
-        agentId,
+        targetAgentId,
       );
 
       const userMessage: Message = {
         id: `msg_${Date.now()}`,
         role: 'user',
-        content: inbound.content,
+        content,
         timestamp: new Date().toISOString(),
         metadata: {
           userId: inbound.userId,
@@ -276,7 +503,7 @@ export const startCommand = new Command('start')
       let responseText = '';
 
       try {
-        for await (const event of agentLoop.run(userMessage, session)) {
+        for await (const event of loop.run(userMessage, session)) {
           switch (event.type) {
             case 'text':
               responseText += event.text;
@@ -295,12 +522,17 @@ export const startCommand = new Command('start')
         responseText = 'Sorry, something went wrong.';
       }
 
-      // Log to memory
+      // Log to flat + semantic memory
       try {
-        await memoryManager.log(`[${inbound.channelName}/${inbound.userId}] ${inbound.content}`);
+        await mm.log(`[${inbound.channelName}/${inbound.userId}] ${content}`);
         if (responseText) {
-          await memoryManager.log(`[assistant] ${responseText.slice(0, 500)}`);
+          await mm.log(`[assistant] ${responseText.slice(0, 500)}`);
         }
+        // Ingest into knowledge graph (fire-and-forget)
+        mm.ingestMessages([
+          userMessage,
+          { id: `msg_${Date.now()}_resp`, role: 'assistant', content: responseText, timestamp: new Date().toISOString() },
+        ]).catch(() => {});
       } catch {
         // Non-critical
       }
@@ -308,6 +540,40 @@ export const startCommand = new Command('start')
       session.updatedAt = new Date().toISOString();
 
       return { text: responseText };
+    }
+
+    // Voice-aware channel handler: wraps handleMessage with STT/TTS
+    async function handleChannelMessage(
+      inbound: InboundMessage,
+      sendFn: (sessionKey: string, content: OutboundMessage) => Promise<void>,
+    ): Promise<void> {
+      const response = await handleMessage(inbound);
+      const outbound: OutboundMessage = { text: response.text };
+
+      // Synthesize voice reply if input was voice and autoVoiceReply is on
+      if (voicePipeline && response.text) {
+        const shouldVoice = voicePipeline.shouldReplyWithVoice(inbound, {
+          autoVoiceReply: config.voice.autoVoiceReply,
+        });
+
+        if (shouldVoice) {
+          try {
+            // Find agent voiceId if configured
+            const targetAgent = registry.find(a => a.id === selectAgent(inbound.content));
+            const audioBuffer = await voicePipeline.processOutgoing(response.text, targetAgent?.voiceId);
+            outbound.media = [{
+              type: 'voice' as const,
+              buffer: audioBuffer,
+              mimeType: 'audio/ogg',
+            }];
+            log.info({ bytes: audioBuffer.length }, 'Voice response synthesized');
+          } catch (err) {
+            log.error({ error: err }, 'Voice synthesis failed, sending text only');
+          }
+        }
+      }
+
+      await sendFn(inbound.sessionKey, outbound);
     }
 
     // ── Start Gateway ───────────────────────────────────────────────
@@ -319,7 +585,7 @@ export const startCommand = new Command('start')
 
     gateway.onMessage(handleMessage);
     gateway.onAgents(() =>
-      config.agents.registry.map((a) => ({
+      registry.map((a) => ({
         id: a.id,
         name: a.name,
         status: 'active',
@@ -343,10 +609,7 @@ export const startCommand = new Command('start')
       try {
         const telegram = new TelegramChannel(config.channels.telegram.token);
         telegram.onMessage(async (inbound) => {
-          const response = await handleMessage(inbound);
-          if (response.text) {
-            await telegram.send(inbound.sessionKey, { text: response.text });
-          }
+          await handleChannelMessage(inbound, (key, content) => telegram.send(key, content));
         });
         await telegram.connect();
         channels.push({ name: 'telegram', disconnect: () => telegram.disconnect() });
@@ -366,10 +629,7 @@ export const startCommand = new Command('start')
           printQRInTerminal: true,
         });
         whatsapp.onMessage(async (inbound) => {
-          const response = await handleMessage(inbound);
-          if (response.text) {
-            await whatsapp.send(inbound.sessionKey, { text: response.text });
-          }
+          await handleChannelMessage(inbound, (key, content) => whatsapp.send(key, content));
         });
         await whatsapp.connect();
         channels.push({ name: 'whatsapp', disconnect: () => whatsapp.disconnect() });
@@ -389,6 +649,10 @@ export const startCommand = new Command('start')
       providerName,
       modelName,
       messageCount: totalMessages,
+      toolNames: displayTools.map(t => t.name),
+      semanticMemoryActive: !!memoryEngine,
+      voiceEnabled: !!voicePipeline,
+      agentNames: registry.map(a => a.name),
     };
 
     await showBootSequence(config, bootResults);
@@ -412,6 +676,16 @@ export const startCommand = new Command('start')
           console.log(`  ${colors.dim('●')} ${channel.name} disconnected`);
         } catch (err) {
           log.error({ error: err, channel: channel.name }, 'Error disconnecting channel');
+        }
+      }
+
+      // Close semantic memory
+      if (memoryEngine) {
+        try {
+          memoryEngine.close();
+          console.log(`  ${colors.dim('●')} Knowledge Graph closed`);
+        } catch (err) {
+          log.error({ error: err }, 'Error closing semantic memory');
         }
       }
 

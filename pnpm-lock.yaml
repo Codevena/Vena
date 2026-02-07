@@ -20,6 +20,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@vena/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
       '@vena/channels':
         specifier: workspace:*
         version: link:../../packages/channels
@@ -32,9 +35,15 @@ importers:
       '@vena/providers':
         specifier: workspace:*
         version: link:../../packages/providers
+      '@vena/semantic-memory':
+        specifier: workspace:*
+        version: link:../../packages/semantic-memory
       '@vena/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@vena/voice':
+        specifier: workspace:*
+        version: link:../../packages/voice
       chalk:
         specifier: ^5.4.1
         version: 5.6.2

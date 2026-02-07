@@ -14,6 +14,7 @@ export { EditTool } from './tools/edit.js';
 export { WebBrowseTool } from './tools/web-browse.js';
 
 export { MemoryManager } from './memory/memory-manager.js';
+export type { SemanticMemoryProvider, MemoryManagerOptions } from './memory/memory-manager.js';
 export { DailyLog } from './memory/daily-log.js';
 export { LongTermMemory } from './memory/long-term.js';
 export { TranscriptStore } from './memory/transcript.js';
