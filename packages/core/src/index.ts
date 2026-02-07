@@ -14,6 +14,8 @@ export { EditTool } from './tools/edit.js';
 export { WebBrowseTool } from './tools/web-browse.js';
 export { BrowserTool } from './tools/browser-tool.js';
 export type { BrowserAdapter } from './tools/browser-tool.js';
+export { GoogleTool } from './tools/google-tool.js';
+export type { GoogleAdapters, GmailAdapter, CalendarAdapter, DriveAdapter, DocsAdapter, SheetsAdapter } from './tools/google-tool.js';
 
 export { MemoryManager } from './memory/memory-manager.js';
 export type { SemanticMemoryProvider, MemoryManagerOptions } from './memory/memory-manager.js';

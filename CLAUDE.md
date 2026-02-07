@@ -62,7 +62,7 @@ Channel (Telegram/WhatsApp/HTTP/WebSocket)
       → getOrCreateSession(sessionKey)
         → AgentLoop[targetAgent].run(userMessage, session)  [AsyncIterable<AgentEvent>]
           → LLM Provider.chat(params)  [AsyncIterable<StreamChunk>]
-            → Tool execution loop (ToolGuard → ToolExecutor → bash/read/write/edit/web_browse)
+            → Tool execution loop (ToolGuard → ToolExecutor → bash/read/write/edit/web_browse/browser/google)
         → Collect response text
       → MemoryManager.log() + MemoryEngine.ingest() (knowledge graph)
     → Voice reply? VoiceMessagePipeline.processOutgoing(text) → audio buffer
@@ -105,10 +105,11 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
 - `vena onboard` → 6-step wizard → writes `~/.vena/vena.json`
 - `vena chat` → real LLM streaming via provider, token counting, readline REPL, `--character` flag
 - `vena start` → Full platform boot:
-  - **Tools:** bash, read, write, edit, web_browse, browser (trust-level gated via ToolGuard)
+  - **Tools:** bash, read, write, edit, web_browse, browser, google (trust-level gated via ToolGuard)
   - **Semantic Memory:** KnowledgeGraph + EntityExtractor + SemanticIndex + ContextRanker via MemoryEngine (when `semanticMemory.enabled`)
   - **Voice:** STT (Whisper/Deepgram) transcription of voice messages + TTS (ElevenLabs/OpenAI) response synthesis via VoiceMessagePipeline (when API keys configured)
   - **Multi-Agent:** Per-agent AgentLoops with own provider/trust/tools + MeshNetwork capability-based routing (when >1 agent in registry)
+  - **Google Workspace:** Gmail, Calendar, Drive, Docs, Sheets via GoogleTool + adapter pattern (lazy import, OAuth token required)
   - **Skills:** SkillLoader (bundled/managed/workspace) → SkillRegistry → SkillInjector → XML injected into system prompt via ContextBuilder
   - **Channels:** Telegram + WhatsApp with voice-aware handleChannelMessage wrapper
   - **Gateway:** Fastify HTTP + WebSocket + OpenAI-compat API
@@ -122,11 +123,11 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
 - **Agent identity:** 5 characters (Nova/Sage/Spark/Ghost/Atlas), SoulCompiler, UserProfile, character-aware voice
 - **Tests:** 8 test files, 67 unit tests (vitest) covering security, identity, gateway, skills
 
-### PACKAGES BUILT BUT NOT YET WIRED INTO START:
-- `@vena/integrations` - Google APIs exist but not connected as tools
+### ALL PACKAGES WIRED
+Every package is now connected end-to-end in `vena start`.
 
 ### NEXT PRIORITY:
-Wire Google integrations as tools → README
+README → npm publish prep → documentation
 
 ## Build Commands
 

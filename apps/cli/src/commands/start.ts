@@ -17,9 +17,10 @@ import {
   EditTool,
   WebBrowseTool,
   BrowserTool,
+  GoogleTool,
   ToolGuard,
 } from '@vena/core';
-import type { BrowserAdapter } from '@vena/core';
+import type { BrowserAdapter, GoogleAdapters } from '@vena/core';
 import type { SecurityPolicy, SemanticMemoryProvider } from '@vena/core';
 import { MemoryEngine } from '@vena/semantic-memory';
 import type { LLMProvider } from '@vena/providers';
@@ -123,6 +124,9 @@ async function showBootSequence(config: VenaConfig, results: BootResults): Promi
   if (results.voiceEnabled) {
     await spinnerLine('Voice pipeline active...', 300);
   }
+  if (results.googleServices.length > 0) {
+    await spinnerLine(`Google Workspace (${results.googleServices.join(', ')})...`, 300);
+  }
 
   for (const name of results.agentNames) {
     await spinnerLine(`Agent "${name}" active...`, 200);
@@ -149,6 +153,7 @@ interface BootResults {
   toolNames: string[];
   semanticMemoryActive: boolean;
   voiceEnabled: boolean;
+  googleServices: string[];
   agentNames: string[];
 }
 
@@ -164,6 +169,7 @@ function showDashboard(config: VenaConfig, results: BootResults): void {
   if (results.semanticMemoryActive) features.push('KnowledgeGraph');
   if (results.toolNames.length > 0) features.push(`${results.toolNames.length} Tools`);
   if (results.voiceEnabled) features.push('Voice');
+  if (results.googleServices.length > 0) features.push('Google');
   if (agentCount > 1) features.push('MeshNetwork');
 
   const dashLines = [
@@ -343,6 +349,42 @@ export const startCommand = new Command('start')
       }
     }
 
+    // ── Google Integrations (lazy import) ──────────────────────────────
+    let googleAdapters: GoogleAdapters | undefined;
+
+    if (config.google?.clientId && config.google?.clientSecret) {
+      try {
+        const { GoogleAuth, GmailService, CalendarService, DriveService, DocsService, SheetsService } =
+          await import('@vena/integrations');
+
+        const auth = new GoogleAuth({
+          clientId: config.google.clientId,
+          clientSecret: config.google.clientSecret,
+        });
+
+        const tokens = auth.loadTokens();
+        if (tokens) {
+          const scopes = config.google.scopes ?? [];
+          const adapters: GoogleAdapters = {};
+
+          if (scopes.includes('gmail'))    adapters.gmail    = new GmailService(auth);
+          if (scopes.includes('calendar')) adapters.calendar = new CalendarService(auth);
+          if (scopes.includes('drive'))    adapters.drive    = new DriveService(auth);
+          if (scopes.includes('docs'))     adapters.docs     = new DocsService(auth);
+          if (scopes.includes('sheets'))   adapters.sheets   = new SheetsService(auth);
+
+          if (Object.keys(adapters).length > 0) {
+            googleAdapters = adapters;
+            log.info({ services: Object.keys(adapters) }, 'Google integrations initialized');
+          }
+        } else {
+          log.warn('Google OAuth tokens not found — run `vena config google-auth` to authorize');
+        }
+      } catch (err) {
+        log.warn({ error: err }, 'Google integrations not available (googleapis not installed?)');
+      }
+    }
+
     // ── Load Skills ──────────────────────────────────────────────────
     const skillRegistry = new SkillRegistry();
     const injector = new SkillInjector();
@@ -403,6 +445,10 @@ export const startCommand = new Command('start')
 
       if (trustLevel !== 'readonly' && config.computer.browser.enabled && browserAdapter) {
         tools.push(new BrowserTool(browserAdapter, config.computer.browser.headless));
+      }
+
+      if (googleAdapters) {
+        tools.push(new GoogleTool(googleAdapters));
       }
 
       return { tools, guard };
@@ -704,6 +750,7 @@ export const startCommand = new Command('start')
       toolNames: displayTools.map(t => t.name),
       semanticMemoryActive: !!memoryEngine,
       voiceEnabled: !!voicePipeline,
+      googleServices: googleAdapters ? Object.keys(googleAdapters) : [],
       agentNames: registry.map(a => a.name),
     };
 

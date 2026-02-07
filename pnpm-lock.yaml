@@ -35,6 +35,9 @@ importers:
       '@vena/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway
+      '@vena/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
       '@vena/providers':
         specifier: workspace:*
         version: link:../../packages/providers
