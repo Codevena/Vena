@@ -25,6 +25,9 @@
   "dependencies": {
     "@vena/shared": "workspace:*",
     "@vena/providers": "workspace:*",
+    "@vena/core": "workspace:*",
+    "@vena/gateway": "workspace:*",
+    "@vena/channels": "workspace:*",
     "commander": "^13.1.0",
     "chalk": "^5.4.1",
     "ora": "^8.1.1",

@@ -20,6 +20,15 @@ importers:
 
   apps/cli:
     dependencies:
+      '@vena/channels':
+        specifier: workspace:*
+        version: link:../../packages/channels
+      '@vena/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@vena/gateway':
+        specifier: workspace:*
+        version: link:../../packages/gateway
       '@vena/providers':
         specifier: workspace:*
         version: link:../../packages/providers
