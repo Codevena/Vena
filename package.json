@@ -1,0 +1,26 @@
+{
+  "name": "vena",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vena - Open Source AI Agent Platform",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "clean": "pnpm -r clean",
+    "typecheck": "pnpm -r typecheck",
+    "start": "pnpm --filter @vena/cli start"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.3",
+    "vitest": "^3.0.0",
+    "tsx": "^4.19.0"
+  }
+}

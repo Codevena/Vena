@@ -1,0 +1,157 @@
+import { z } from 'zod';
+
+const providerConfigSchema = z.object({
+  apiKey: z.string().optional(),
+  model: z.string(),
+  baseUrl: z.string().optional(),
+});
+
+const agentConfigSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  persona: z.string().default('Helpful personal assistant'),
+  provider: z.string().default('anthropic'),
+  model: z.string().optional(),
+  capabilities: z.array(z.string()).default(['general']),
+  trustLevel: z.enum(['full', 'limited', 'readonly']).default('full'),
+  channels: z.array(z.string()).default([]),
+  voiceId: z.string().optional(),
+});
+
+export const venaConfigSchema = z.object({
+  providers: z.object({
+    default: z.string().default('anthropic'),
+    anthropic: providerConfigSchema.optional(),
+    openai: providerConfigSchema.optional(),
+    gemini: providerConfigSchema.optional(),
+    ollama: z.object({
+      baseUrl: z.string().default('http://localhost:11434'),
+      model: z.string().default('llama3'),
+    }).optional(),
+  }),
+
+  channels: z.object({
+    telegram: z.object({
+      enabled: z.boolean().default(false),
+      token: z.string().optional(),
+    }).optional(),
+    whatsapp: z.object({
+      enabled: z.boolean().default(false),
+    }).optional(),
+  }).default({}),
+
+  gateway: z.object({
+    port: z.number().default(18789),
+    host: z.string().default('127.0.0.1'),
+  }).default({}),
+
+  agents: z.object({
+    defaults: z.object({
+      maxConcurrent: z.number().default(4),
+    }).default({}),
+    registry: z.array(agentConfigSchema).default([{
+      id: 'main',
+      name: 'Vena',
+      persona: 'Helpful personal assistant',
+      provider: 'anthropic',
+      capabilities: ['general', 'coding', 'research'],
+      trustLevel: 'full',
+    }]),
+    mesh: z.object({
+      enabled: z.boolean().default(true),
+      consultationTimeout: z.number().default(30000),
+      maxConcurrentConsultations: z.number().default(3),
+    }).default({}),
+  }).default({}),
+
+  memory: z.object({
+    vectorSearch: z.boolean().default(true),
+    embeddingProvider: z.string().default('anthropic'),
+    semanticMemory: z.object({
+      enabled: z.boolean().default(true),
+      entityExtraction: z.boolean().default(true),
+      knowledgeGraph: z.boolean().default(true),
+      autoConsolidate: z.boolean().default(true),
+      consolidateInterval: z.string().default('24h'),
+    }).default({}),
+    sharedMemory: z.object({
+      enabled: z.boolean().default(true),
+      crossAgentSearch: z.boolean().default(true),
+    }).default({}),
+  }).default({}),
+
+  computer: z.object({
+    shell: z.object({
+      enabled: z.boolean().default(true),
+      allowedCommands: z.array(z.string()).default(['*']),
+    }).default({}),
+    browser: z.object({
+      enabled: z.boolean().default(true),
+      headless: z.boolean().default(false),
+    }).default({}),
+    keyboard: z.object({
+      enabled: z.boolean().default(false),
+    }).default({}),
+    screenshot: z.object({
+      enabled: z.boolean().default(true),
+    }).default({}),
+  }).default({}),
+
+  voice: z.object({
+    tts: z.object({
+      provider: z.enum(['elevenlabs', 'openai-tts']).default('elevenlabs'),
+      apiKey: z.string().optional(),
+      defaultVoice: z.string().default('adam'),
+      model: z.string().default('eleven_multilingual_v2'),
+    }).default({}),
+    stt: z.object({
+      provider: z.enum(['whisper', 'deepgram']).default('whisper'),
+      model: z.string().default('whisper-1'),
+      apiKey: z.string().optional(),
+    }).default({}),
+    calls: z.object({
+      enabled: z.boolean().default(false),
+      provider: z.enum(['twilio', 'vapi']).default('twilio'),
+      accountSid: z.string().optional(),
+      authToken: z.string().optional(),
+      phoneNumber: z.string().optional(),
+    }).default({}),
+    autoVoiceReply: z.boolean().default(true),
+  }).default({}),
+
+  google: z.object({
+    clientId: z.string().optional(),
+    clientSecret: z.string().optional(),
+    scopes: z.array(z.string()).default(['gmail', 'docs', 'sheets', 'calendar', 'drive']),
+  }).optional(),
+
+  skills: z.object({
+    dirs: z.array(z.string()).default([]),
+    managed: z.string().default('~/.vena/skills'),
+  }).default({}),
+});
+
+export type VenaConfig = z.infer<typeof venaConfigSchema>;
+export type AgentConfig = z.infer<typeof agentConfigSchema>;
+
+export function parseConfig(raw: unknown): VenaConfig {
+  return venaConfigSchema.parse(raw);
+}
+
+export function resolveEnvVars(value: string): string {
+  return value.replace(/\$\{(\w+)\}/g, (_, key) => process.env[key] ?? '');
+}
+
+export function resolveConfigEnvVars(config: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (typeof value === 'string') {
+      result[key] = resolveEnvVars(value);
+    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      result[key] = resolveConfigEnvVars(value as Record<string, unknown>);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}

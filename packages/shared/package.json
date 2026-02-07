@@ -1,0 +1,30 @@
+{
+  "name": "@vena/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pino": "^9.6.0",
+    "zod": "^3.24.0",
+    "nanoid": "^5.0.9"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.3",
+    "@types/node": "^22.0.0"
+  }
+}
