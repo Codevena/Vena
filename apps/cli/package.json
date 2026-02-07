@@ -31,6 +31,7 @@
     "@vena/semantic-memory": "workspace:*",
     "@vena/voice": "workspace:*",
     "@vena/agents": "workspace:*",
+    "@vena/skills": "workspace:*",
     "commander": "^13.1.0",
     "chalk": "^5.4.1",
     "ora": "^8.1.1",

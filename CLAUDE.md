@@ -109,6 +109,7 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
   - **Semantic Memory:** KnowledgeGraph + EntityExtractor + SemanticIndex + ContextRanker via MemoryEngine (when `semanticMemory.enabled`)
   - **Voice:** STT (Whisper/Deepgram) transcription of voice messages + TTS (ElevenLabs/OpenAI) response synthesis via VoiceMessagePipeline (when API keys configured)
   - **Multi-Agent:** Per-agent AgentLoops with own provider/trust/tools + MeshNetwork capability-based routing (when >1 agent in registry)
+  - **Skills:** SkillLoader (bundled/managed/workspace) → SkillRegistry → SkillInjector → XML injected into system prompt via ContextBuilder
   - **Channels:** Telegram + WhatsApp with voice-aware handleChannelMessage wrapper
   - **Gateway:** Fastify HTTP + WebSocket + OpenAI-compat API
 - HTTP API: `/api/message`, `/health`, `/api/status`, `/api/sessions`, `/api/agents`
@@ -122,12 +123,11 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
 - **Tests:** 8 test files, 67 unit tests (vitest) covering security, identity, gateway, skills
 
 ### PACKAGES BUILT BUT NOT YET WIRED INTO START:
-- `@vena/skills` - SkillRegistry exists but AgentLoop doesn't load user skills yet
 - `@vena/computer` - Browser (Playwright) exists but not registered as tool (Shell is wired via BashTool)
 - `@vena/integrations` - Google APIs exist but not connected as tools
 
 ### NEXT PRIORITY:
-Wire user skills into AgentLoop → Wire browser tool → Wire Google integrations as tools → README
+Wire browser tool → Wire Google integrations as tools → README
 
 ## Build Commands
 

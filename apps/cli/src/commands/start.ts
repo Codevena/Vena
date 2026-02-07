@@ -23,6 +23,7 @@ import { MemoryEngine } from '@vena/semantic-memory';
 import type { LLMProvider } from '@vena/providers';
 import { VoiceMessagePipeline, TextToSpeech, SpeechToText } from '@vena/voice';
 import { AgentRegistry, MessageBus, MeshNetwork } from '@vena/agents';
+import { SkillLoader, SkillRegistry, SkillInjector } from '@vena/skills';
 import {
   loadConfig,
   createProvider,
@@ -326,6 +327,36 @@ export const startCommand = new Command('start')
       }
     }
 
+    // ── Load Skills ──────────────────────────────────────────────────
+    const skillRegistry = new SkillRegistry();
+    const injector = new SkillInjector();
+    let skillsContext = '';
+
+    try {
+      const managedPath = config.skills.managed.replace('~', process.env['HOME'] ?? '');
+      const bundledPath = path.join(DATA_DIR, 'skills', 'bundled');
+      const workspaceDirs = config.skills.dirs;
+
+      const loader = new SkillLoader(
+        bundledPath,
+        managedPath,
+        workspaceDirs[0], // primary workspace skill dir
+      );
+
+      const loadedSkills = await loader.loadAll();
+      for (const skill of loadedSkills) {
+        skillRegistry.register(skill);
+      }
+
+      const enabledSkills = skillRegistry.getEnabled();
+      if (enabledSkills.length > 0) {
+        skillsContext = injector.generate(enabledSkills);
+        log.info({ count: enabledSkills.length, names: enabledSkills.map(s => s.name) }, 'Skills loaded');
+      }
+    } catch (err) {
+      log.warn({ error: err }, 'Failed to load skills (non-critical)');
+    }
+
     // ── Build Tools + Security Guard ─────────────────────────────────
     function buildToolsForTrust(trustLevel: 'full' | 'limited' | 'readonly'): { tools: Tool[]; guard: ToolGuard } {
       const securityPolicy: SecurityPolicy = {
@@ -390,6 +421,7 @@ export const startCommand = new Command('start')
         provider: agentProvider,
         tools,
         systemPrompt: agentConfig.persona ?? 'You are a helpful AI assistant.',
+        skillsContext: skillsContext || undefined,
         memoryManager: mm,
         guard,
         workspacePath: DATA_DIR,

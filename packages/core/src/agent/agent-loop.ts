@@ -29,6 +29,7 @@ export interface AgentLoopOptions {
   tools: Tool[];
   systemPrompt: string;
   soulPrompt?: string;
+  skillsContext?: string;
   memoryManager: MemoryManager;
   guard?: ToolGuard;
   workspacePath?: string;
@@ -49,6 +50,7 @@ export class AgentLoop {
   private memoryManager: MemoryManager;
   private systemPrompt: string;
   private soulPrompt?: string;
+  private skillsContext?: string;
   private maxIterations: number;
   private maxTokens: number;
   private workspacePath: string;
@@ -58,6 +60,7 @@ export class AgentLoop {
     this.provider = opts.provider;
     this.systemPrompt = opts.systemPrompt;
     this.soulPrompt = opts.soulPrompt;
+    this.skillsContext = opts.skillsContext;
     this.memoryManager = opts.memoryManager;
     this.maxIterations = opts.options?.maxIterations ?? 10;
     this.maxTokens = opts.options?.maxTokens ?? 4096;
@@ -84,6 +87,7 @@ export class AgentLoop {
       const context = this.contextBuilder.build(session, {
         systemPrompt: this.systemPrompt,
         soulPrompt: this.soulPrompt,
+        skills: this.skillsContext,
         memoryContext,
         maxTokens: this.maxTokens,
       });
