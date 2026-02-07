@@ -1,0 +1,16 @@
+services:
+  vena:
+    build: .
+    ports:
+      - "18789:18789"
+    volumes:
+      - ./workspace:/app/workspace
+      - ~/.vena:/root/.vena
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:18789/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

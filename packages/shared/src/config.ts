@@ -1,9 +1,24 @@
 import { z } from 'zod';
 
+const authConfigSchema = z.object({
+  type: z.enum(['api_key', 'oauth_token', 'bearer_token']).default('api_key'),
+  apiKey: z.string().optional(),
+  oauthToken: z.string().optional(),
+  refreshToken: z.string().optional(),
+  tokenUrl: z.string().optional(),
+  clientId: z.string().optional(),
+  clientSecret: z.string().optional(),
+  expiresAt: z.number().optional(),
+}).refine(
+  (data) => data.apiKey || data.oauthToken,
+  { message: 'Either apiKey or oauthToken must be provided' }
+);
+
 const providerConfigSchema = z.object({
   apiKey: z.string().optional(),
   model: z.string(),
   baseUrl: z.string().optional(),
+  auth: authConfigSchema.optional(),
 });
 
 const agentConfigSchema = z.object({
@@ -133,6 +148,7 @@ export const venaConfigSchema = z.object({
 
 export type VenaConfig = z.infer<typeof venaConfigSchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
+export type AuthConfig = z.infer<typeof authConfigSchema>;
 
 export function parseConfig(raw: unknown): VenaConfig {
   return venaConfigSchema.parse(raw);

@@ -1,0 +1,32 @@
+{
+  "name": "@vena/channels",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vena/shared": "workspace:*",
+    "grammy": "^1.31.0",
+    "@whiskeysockets/baileys": "^6.7.0",
+    "@hapi/boom": "^10.0.1",
+    "pino": "^9.6.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.3",
+    "@types/node": "^22.0.0"
+  }
+}

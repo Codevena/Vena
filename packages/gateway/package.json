@@ -1,0 +1,32 @@
+{
+  "name": "@vena/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vena/shared": "workspace:*",
+    "fastify": "^5.2.0",
+    "ws": "^8.18.0",
+    "nanoid": "^5.0.9"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.3",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.14"
+  }
+}

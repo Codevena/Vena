@@ -1,0 +1,10 @@
+export { AgentRegistry } from './agent-registry.js';
+export { AgentFactory } from './agent-factory.js';
+export type { AgentTemplate } from './agent-factory.js';
+export { MessageBus } from './message-bus.js';
+export type { BusMessage } from './message-bus.js';
+export { MeshNetwork } from './mesh-network.js';
+export { ConsultationManager } from './consultation.js';
+export { SharedMemoryManager } from './shared-memory.js';
+export { DelegationManager } from './delegation.js';
+export { AgentDiscovery } from './agent-discovery.js';
