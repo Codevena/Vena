@@ -7,7 +7,7 @@ Vena is an open-source AI agent platform built as a TypeScript monorepo (pnpm wo
 **Owner:** Markus (@Codevena)
 **Repo:** https://github.com/Codevena/Vena.git
 **Branch:** `master`
-**Size:** 105 TypeScript source files, ~14,500 lines, 12 packages, 8 test files (67 tests)
+**Size:** 116 TypeScript source files, ~15,300 lines, 12 packages, 8 test files (67 tests)
 
 ## Rules
 
@@ -123,11 +123,16 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
 - **Agent identity:** 5 characters (Nova/Sage/Spark/Ghost/Atlas), SoulCompiler, UserProfile, character-aware voice
 - **Tests:** 8 test files, 67 unit tests (vitest) covering security, identity, gateway, skills
 
-### ALL PACKAGES WIRED
-Every package is now connected end-to-end in `vena start`.
+### ALL 12 PACKAGES WIRED
+Every package is now connected end-to-end in `vena start`. Zero unwired packages remaining.
 
-### NEXT PRIORITY:
-README → npm publish prep → documentation
+### NEXT PRIORITY (launch checklist):
+1. **README.md** — Hero section, feature grid, quick start, architecture diagram, config reference
+2. **`vena config google-auth`** — OAuth flow CLI command so users can authorize Google Workspace
+3. **npm publish prep** — package.json metadata, LICENSE, .npmignore, `vena` global bin
+4. **E2E smoke tests** — start gateway, send HTTP message, verify response, shutdown
+5. **GitHub Actions CI** — build + test + typecheck on push
+6. **Documentation site** — docs/ with guides for each package
 
 ## Build Commands
 
