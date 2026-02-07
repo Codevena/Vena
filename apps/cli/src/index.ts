@@ -14,6 +14,12 @@ import { networkCommand } from './commands/network.js';
 
 const program = new Command();
 
+// Prevent noisy MaxListenersExceededWarning on process exit listeners in CLI flows.
+const previousMaxListeners = process.getMaxListeners();
+if (previousMaxListeners !== 0 && previousMaxListeners < 30) {
+  process.setMaxListeners(30);
+}
+
 program
   .name('vena')
   .description('Vena - AI Agent Platform')
