@@ -20,6 +20,8 @@ const chatCompletionSchema = z.object({
   stream: z.boolean().optional().default(false),
   temperature: z.number().optional(),
   max_tokens: z.number().optional(),
+  user: z.string().optional(),
+  session_key: z.string().optional(),
 });
 
 export async function openaiCompatAPI(fastify: FastifyInstance, options: OpenAICompatOptions): Promise<void> {
@@ -36,7 +38,7 @@ export async function openaiCompatAPI(fastify: FastifyInstance, options: OpenAIC
       });
     }
 
-    const { model, messages, stream, temperature, max_tokens } = parsed.data;
+    const { model, messages, stream, temperature, max_tokens, user, session_key } = parsed.data;
 
     // Extract the last user message
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
@@ -46,13 +48,13 @@ export async function openaiCompatAPI(fastify: FastifyInstance, options: OpenAIC
       });
     }
 
-    const sessionKey = `openai-${nanoid(12)}`;
+    const sessionKey = session_key ?? `openai-${nanoid(12)}`;
     const inbound: InboundMessage = {
       channelName: 'openai-compat',
       sessionKey,
-      userId: 'openai-api',
+      userId: user ?? 'openai-api',
       content: lastUserMsg.content,
-      raw: { model: model ?? defaultModel, temperature, max_tokens, messages },
+      raw: { model: model ?? defaultModel, temperature, max_tokens, messages, session_key },
     };
 
     log.debug({ model: model ?? defaultModel, stream, messageCount: messages.length }, 'OpenAI compat request');

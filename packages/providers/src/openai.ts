@@ -92,11 +92,18 @@ export class OpenAIProvider implements LLMProvider {
               // New tool call
               const id = tc.id ?? `call_${tc.index}`;
               const name = tc.function?.name ?? '';
-              toolCalls.set(tc.index, { id, name, args: tc.function?.arguments ?? '' });
+              const args = tc.function?.arguments ?? '';
+              toolCalls.set(tc.index, { id, name, args });
               yield {
                 type: 'tool_use',
                 toolUse: { id, name },
               };
+              if (args) {
+                yield {
+                  type: 'tool_use_input',
+                  toolInput: args,
+                };
+              }
             } else {
               // Accumulate arguments
               if (tc.function?.arguments) {

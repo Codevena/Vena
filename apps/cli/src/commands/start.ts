@@ -87,6 +87,74 @@ function getOrCreateSession(sessionKey: string, channelName: string, userId: str
   return session;
 }
 
+function createEphemeralSession(
+  sessionKey: string,
+  channelName: string,
+  userId: string,
+  agentId: string,
+  seedMessages: Message[] = [],
+): Session {
+  return {
+    id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    channelName,
+    sessionKey,
+    messages: seedMessages,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    metadata: {
+      userId,
+      agentId,
+      tokenCount: 0,
+      compactionCount: 0,
+    },
+  };
+}
+
+type OpenAICompatRaw = {
+  messages?: Array<{ role: string; content: string }>;
+};
+
+function extractOpenAiHistory(rawMessages: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> {
+  const lastUserIndex = [...rawMessages].map(m => m.role).lastIndexOf('user');
+  if (lastUserIndex <= 0) return [];
+  return rawMessages.slice(0, lastUserIndex).filter(m => m.role !== 'system');
+}
+
+function extractOpenAiSystemMessages(rawMessages: Array<{ role: string; content: string }>): string[] {
+  const seen = new Set<string>();
+  const system: string[] = [];
+  for (const msg of rawMessages) {
+    if (msg.role !== 'system') continue;
+    const normalized = msg.content.trim();
+    if (!normalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    system.push(normalized);
+  }
+  return system;
+}
+
+function extractOpenAiSystemPrompt(rawMessages: Array<{ role: string; content: string }>): string | undefined {
+  const system = extractOpenAiSystemMessages(rawMessages).join('\n\n').trim();
+  return system.length > 0 ? system : undefined;
+}
+
+function mapOpenAiMessages(rawMessages: Array<{ role: string; content: string }>): Message[] {
+  const now = () => new Date().toISOString();
+  return rawMessages.map((m, idx) => {
+    const role: Message['role'] =
+      m.role === 'assistant' || m.role === 'system' || m.role === 'tool'
+        ? m.role
+        : 'user';
+    return {
+      id: `msg_hist_${idx}_${Date.now()}`,
+      role,
+      content: m.content,
+      timestamp: now(),
+    };
+  });
+}
+
 // ── Boot Sequence ─────────────────────────────────────────────────────
 
 async function showBootSequence(config: VenaConfig, results: BootResults): Promise<void> {
@@ -398,7 +466,7 @@ export const startCommand = new Command('start')
       const loader = new SkillLoader(
         bundledPath,
         managedPath,
-        workspaceDirs[0], // primary workspace skill dir
+        workspaceDirs,
       );
 
       const loadedSkills = await loader.loadAll();
@@ -457,6 +525,7 @@ export const startCommand = new Command('start')
     // ── Create Agent Loops (per agent in registry) ───────────────────
     const agentLoops = new Map<string, AgentLoop>();
     const agentMemory = new Map<string, MemoryManager>();
+    const agentProviderNames = new Map<string, string>();
     const registry = config.agents.registry;
 
     for (const agentConfig of registry) {
@@ -465,12 +534,15 @@ export const startCommand = new Command('start')
 
       // Per-agent provider (may differ by provider/model)
       let agentProvider: LLMProvider;
+      let agentProviderName = providerName;
       try {
         const result = createProvider(config, agentConfig.provider, agentConfig.model);
         agentProvider = result.provider;
+        agentProviderName = result.providerName;
       } catch {
         agentProvider = defaultProvider;
       }
+      agentProviderNames.set(agentConfig.id, agentProviderName);
 
       // Per-agent memory
       const mm = new MemoryManager({
@@ -579,12 +651,42 @@ export const startCommand = new Command('start')
         log.info({ target: targetAgentId, content: content.slice(0, 80) }, 'Routed to agent');
       }
 
-      const session = getOrCreateSession(
-        inbound.sessionKey,
-        inbound.channelName,
-        inbound.userId,
-        targetAgentId,
-      );
+      let session: Session;
+      let systemPromptOverride: string | undefined;
+      const raw = inbound.raw as OpenAICompatRaw | undefined;
+      const rawMessages = Array.isArray(raw?.messages) ? raw!.messages! : null;
+      if (rawMessages && inbound.channelName === 'openai-compat') {
+        const targetProvider = agentProviderNames.get(targetAgentId) ?? providerName;
+        const isOpenAIProvider = targetProvider === 'openai';
+        const history = extractOpenAiHistory(rawMessages);
+        const systemMessages = extractOpenAiSystemMessages(rawMessages);
+        let seedMessages = mapOpenAiMessages(history);
+
+        if (isOpenAIProvider && systemMessages.length > 0) {
+          const systemSeeds = mapOpenAiMessages(systemMessages.map((content) => ({ role: 'system', content })));
+          seedMessages = [...systemSeeds, ...seedMessages];
+        }
+        session = createEphemeralSession(
+          inbound.sessionKey,
+          inbound.channelName,
+          inbound.userId,
+          targetAgentId,
+          seedMessages,
+        );
+        const systemPrompt = !isOpenAIProvider ? extractOpenAiSystemPrompt(rawMessages) : undefined;
+        if (systemPrompt) {
+          const targetConfig = registry.find(a => a.id === targetAgentId) ?? firstAgentConfig;
+          const basePrompt = targetConfig?.persona ?? 'You are a helpful AI assistant.';
+          systemPromptOverride = [systemPrompt, basePrompt].join('\n\n');
+        }
+      } else {
+        session = getOrCreateSession(
+          inbound.sessionKey,
+          inbound.channelName,
+          inbound.userId,
+          targetAgentId,
+        );
+      }
 
       const userMessage: Message = {
         id: `msg_${Date.now()}`,
@@ -601,7 +703,8 @@ export const startCommand = new Command('start')
       let responseText = '';
 
       try {
-        for await (const event of loop.run(userMessage, session)) {
+        const overrides = systemPromptOverride ? { systemPrompt: systemPromptOverride } : undefined;
+        for await (const event of loop.run(userMessage, session, overrides)) {
           switch (event.type) {
             case 'text':
               responseText += event.text;

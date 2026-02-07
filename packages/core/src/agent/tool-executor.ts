@@ -175,6 +175,16 @@ export class ToolExecutor {
       }
     }
 
+    if (toolName === 'browser') {
+      const action = input['action'] as string | undefined;
+      if (action === 'navigate' && input['url']) {
+        const urlCheck = this.guard.validateUrl(input['url'] as string);
+        if (!urlCheck.allowed) {
+          return { content: `Security: ${urlCheck.reason}`, isError: true };
+        }
+      }
+    }
+
     return null;
   }
 

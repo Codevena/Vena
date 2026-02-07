@@ -14,7 +14,7 @@ export interface SecurityPolicy {
 
 const TRUST_LEVEL_TOOLS: Record<string, string[]> = {
   readonly: ['read', 'web_browse'],
-  limited: ['read', 'write', 'edit', 'web_browse'],
+  limited: ['read', 'write', 'edit', 'web_browse', 'browser', 'google'],
   full: ['*'],
 };
 

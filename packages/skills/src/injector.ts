@@ -24,7 +24,13 @@ export class SkillInjector {
         const name = escapeXml(skill.name);
         const triggers = escapeXml(skill.triggers.join(', '));
         const description = escapeXml(skill.description);
-        return `<skill name="${name}" triggers="${triggers}">${description}</skill>`;
+        const prompt = escapeXml(skill.systemPrompt);
+        return [
+          `<skill name="${name}" triggers="${triggers}">`,
+          `  <description>${description}</description>`,
+          `  <prompt>${prompt}</prompt>`,
+          `</skill>`,
+        ].join('\n');
       })
       .join('\n');
 

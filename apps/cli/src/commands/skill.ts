@@ -3,6 +3,8 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SkillParser } from '@vena/skills';
+import { SkillError } from '@vena/shared';
 
 const MANAGED_DIR = path.join(os.homedir(), '.vena', 'skills');
 const CONFIG_PATH = path.join(os.homedir(), '.vena', 'vena.json');
@@ -16,34 +18,95 @@ interface SkillInfo {
   path: string;
 }
 
-function parseSkillMd(content: string, filePath: string, source: SkillInfo['source']): SkillInfo {
-  const nameMatch = content.match(/^#\s+(.+)/m);
-  const descMatch = content.match(/^>\s*(.+)/m) ?? content.match(/description:\s*(.+)/i);
-  const versionMatch = content.match(/version:\s*(.+)/i);
-  const triggerMatch = content.match(/triggers?:\s*(.+)/i);
+const parser = new SkillParser();
 
+function resolvePath(input: string): string {
+  return input.startsWith('~') ? input.replace('~', os.homedir()) : input;
+}
+
+function toSkillInfo(content: string, filePath: string, source: SkillInfo['source']): SkillInfo {
+  const skill = parser.parse(content, source, filePath);
   return {
-    name: nameMatch?.[1]?.trim() ?? path.basename(filePath, '.md'),
-    description: descMatch?.[1]?.trim() ?? 'No description',
-    version: versionMatch?.[1]?.trim() ?? '0.1.0',
-    triggers: triggerMatch?.[1]?.split(',').map(t => t.trim()) ?? [],
+    name: skill.name,
+    description: skill.description,
+    version: skill.version,
+    triggers: skill.triggers,
     source,
     path: filePath,
   };
+}
+
+function tryParseSkillFile(
+  filePath: string,
+  source: SkillInfo['source'],
+  strict: boolean,
+): SkillInfo | null {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return toSkillInfo(content, filePath, source);
+  } catch (error) {
+    if (error instanceof SkillError) {
+      if (strict) {
+        console.log(chalk.yellow(`  Skipping invalid skill at ${filePath}: ${error.message}`));
+      }
+      return null;
+    }
+    return null;
+  }
+}
+
+function scanSkillDir(dirPath: string, source: SkillInfo['source'], strictFiles: boolean): SkillInfo[] {
+  const skills: SkillInfo[] = [];
+  if (!fs.existsSync(dirPath)) return skills;
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const skillFile = path.join(dirPath, entry.name, 'SKILL.md');
+      const skill = tryParseSkillFile(skillFile, source, true);
+      if (skill) skills.push(skill);
+      continue;
+    }
+
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      const filePath = path.join(dirPath, entry.name);
+      const isExplicitSkill = entry.name.toLowerCase() === 'skill.md';
+      const strict = strictFiles || isExplicitSkill;
+      const skill = tryParseSkillFile(filePath, source, strict);
+      if (skill) skills.push(skill);
+    }
+  }
+
+  return skills;
+}
+
+function collectSkillFiles(dirPath: string): string[] {
+  const files: string[] = [];
+  if (!fs.existsSync(dirPath)) return files;
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const skillFile = path.join(dirPath, entry.name, 'SKILL.md');
+      if (fs.existsSync(skillFile)) {
+        files.push(skillFile);
+      }
+      continue;
+    }
+
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      files.push(path.join(dirPath, entry.name));
+    }
+  }
+
+  return files;
 }
 
 function loadSkills(): SkillInfo[] {
   const skills: SkillInfo[] = [];
 
   // Load managed skills
-  if (fs.existsSync(MANAGED_DIR)) {
-    const files = fs.readdirSync(MANAGED_DIR).filter(f => f.endsWith('.md'));
-    for (const file of files) {
-      const filePath = path.join(MANAGED_DIR, file);
-      const content = fs.readFileSync(filePath, 'utf-8');
-      skills.push(parseSkillMd(content, filePath, 'managed'));
-    }
-  }
+  skills.push(...scanSkillDir(MANAGED_DIR, 'managed', true));
 
   // Load workspace skills from config
   if (fs.existsSync(CONFIG_PATH)) {
@@ -51,15 +114,8 @@ function loadSkills(): SkillInfo[] {
     const skillsConfig = config['skills'] as { dirs?: string[] } | undefined;
     const dirs = skillsConfig?.dirs ?? [];
     for (const dir of dirs) {
-      const resolved = dir.startsWith('~') ? dir.replace('~', os.homedir()) : dir;
-      if (fs.existsSync(resolved)) {
-        const files = fs.readdirSync(resolved).filter(f => f.endsWith('.md'));
-        for (const file of files) {
-          const filePath = path.join(resolved, file);
-          const content = fs.readFileSync(filePath, 'utf-8');
-          skills.push(parseSkillMd(content, filePath, 'workspace'));
-        }
-      }
+      const resolved = resolvePath(dir);
+      skills.push(...scanSkillDir(resolved, 'workspace', false));
     }
   }
 
@@ -99,20 +155,28 @@ skillCommand
   .command('install <pathOrUrl>')
   .description('Install a skill from a SKILL.md file')
   .action((pathOrUrl: string) => {
-    const resolved = pathOrUrl.startsWith('~') ? pathOrUrl.replace('~', os.homedir()) : path.resolve(pathOrUrl);
+    const resolved = resolvePath(pathOrUrl.startsWith('~') ? pathOrUrl : path.resolve(pathOrUrl));
 
     if (!fs.existsSync(resolved)) {
       console.log(chalk.red(`\n  File not found: ${resolved}\n`));
       return;
     }
 
-    fs.mkdirSync(MANAGED_DIR, { recursive: true });
-    const destName = path.basename(resolved);
-    const destPath = path.join(MANAGED_DIR, destName);
-    fs.copyFileSync(resolved, destPath);
+    let skill: SkillInfo | null = null;
+    try {
+      const content = fs.readFileSync(resolved, 'utf-8');
+      skill = toSkillInfo(content, resolved, 'managed');
+    } catch (error) {
+      const message = error instanceof SkillError ? error.message : String(error);
+      console.log(chalk.red(`\n  Failed to parse skill: ${message}\n`));
+      return;
+    }
 
-    const content = fs.readFileSync(destPath, 'utf-8');
-    const skill = parseSkillMd(content, destPath, 'managed');
+    fs.mkdirSync(MANAGED_DIR, { recursive: true });
+    const destDir = path.join(MANAGED_DIR, skill.name);
+    const destPath = path.join(destDir, 'SKILL.md');
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.copyFileSync(resolved, destPath);
 
     console.log(chalk.green(`\n  \u2713 Installed skill: ${skill.name}`));
     console.log(chalk.dim(`    ${destPath}\n`));
@@ -130,7 +194,13 @@ skillCommand
       return;
     }
 
-    fs.unlinkSync(skill.path);
+    const skillPath = skill.path;
+    if (path.basename(skillPath).toLowerCase() === 'skill.md') {
+      const dir = path.dirname(skillPath);
+      fs.rmSync(dir, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(skillPath);
+    }
     console.log(chalk.green(`\n  \u2713 Removed skill: ${skill.name}\n`));
   });
 
@@ -156,4 +226,45 @@ skillCommand
       console.log(`  Triggers: ${skill.triggers.join(', ')}`);
     }
     console.log();
+  });
+
+skillCommand
+  .command('validate [pathOrDir]')
+  .description('Validate a SKILL.md file or directory of skills')
+  .action((pathOrDir?: string) => {
+    const target = resolvePath(pathOrDir ?? MANAGED_DIR);
+
+    if (!fs.existsSync(target)) {
+      console.log(chalk.red(`\n  Path not found: ${target}\n`));
+      process.exitCode = 1;
+      return;
+    }
+
+    const stat = fs.statSync(target);
+    const files = stat.isDirectory() ? collectSkillFiles(target) : [target];
+
+    if (files.length === 0) {
+      console.log(chalk.yellow(`\n  No skill files found in ${target}\n`));
+      return;
+    }
+
+    let failures = 0;
+    console.log();
+    for (const file of files) {
+      try {
+        const content = fs.readFileSync(file, 'utf-8');
+        const skill = parser.parse(content, 'workspace', file);
+        console.log(chalk.green(`  ✓ ${skill.name} v${skill.version}`), chalk.dim(file));
+      } catch (error) {
+        failures++;
+        const msg = error instanceof SkillError ? error.message : String(error);
+        console.log(chalk.red(`  ✗ ${path.basename(file)}`), chalk.dim(file));
+        console.log(chalk.dim(`    ${msg}`));
+      }
+    }
+    console.log();
+
+    if (failures > 0) {
+      process.exitCode = 1;
+    }
   });

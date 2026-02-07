@@ -47,6 +47,14 @@ export class BrowserController {
     return await page.innerText('body');
   }
 
+  async waitForSelector(selector: string, timeoutMs?: number): Promise<void> {
+    await this.getPage().waitForSelector(selector, { timeout: timeoutMs });
+  }
+
+  async waitForTimeout(timeoutMs: number): Promise<void> {
+    await this.getPage().waitForTimeout(timeoutMs);
+  }
+
   async screenshot(): Promise<Buffer> {
     const buffer = await this.getPage().screenshot({ type: 'png' });
     return Buffer.from(buffer);

@@ -41,6 +41,12 @@ export interface AgentLoopOptions {
   };
 }
 
+export interface AgentRunOverrides {
+  systemPrompt?: string;
+  soulPrompt?: string;
+  skillsContext?: string;
+}
+
 const logger = createLogger('agent-loop');
 
 export class AgentLoop {
@@ -70,7 +76,11 @@ export class AgentLoop {
     this.contextBuilder = new ContextBuilder();
   }
 
-  async *run(message: Message, session: Session): AsyncIterable<AgentEvent> {
+  async *run(
+    message: Message,
+    session: Session,
+    overrides?: AgentRunOverrides,
+  ): AsyncIterable<AgentEvent> {
     session.messages.push(message);
 
     let iterations = 0;
@@ -85,9 +95,9 @@ export class AgentLoop {
       );
 
       const context = this.contextBuilder.build(session, {
-        systemPrompt: this.systemPrompt,
-        soulPrompt: this.soulPrompt,
-        skills: this.skillsContext,
+        systemPrompt: overrides?.systemPrompt ?? this.systemPrompt,
+        soulPrompt: overrides?.soulPrompt ?? this.soulPrompt,
+        skills: overrides?.skillsContext ?? this.skillsContext,
         memoryContext,
         maxTokens: this.maxTokens,
       });
@@ -128,8 +138,11 @@ export class AgentLoop {
               break;
 
             case 'tool_use_input':
-              if (currentToolUse && chunk.text) {
-                currentToolUse.inputJson += chunk.text;
+              if (currentToolUse) {
+                const inputChunk = chunk.toolInput ?? chunk.text ?? '';
+                if (inputChunk) {
+                  currentToolUse.inputJson += inputChunk;
+                }
               }
               break;
 
