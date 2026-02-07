@@ -241,9 +241,11 @@ export const startCommand = new Command('start')
       tools: [],
       systemPrompt,
       memoryManager,
+      workspacePath: DATA_DIR,
       options: {
         maxIterations: 10,
         maxTokens: 4096,
+        streamTools: true,
       },
     });
 

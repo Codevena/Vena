@@ -73,6 +73,8 @@ export interface Tool {
   description: string;
   inputSchema: Record<string, unknown>;
   execute: (input: Record<string, unknown>, context: ToolContext) => Promise<ToolResult>;
+  /** Optional streaming execute for long-running tools (shell, browser). */
+  executeStream?: (input: Record<string, unknown>, context: ToolContext) => AsyncIterable<ToolProgress>;
 }
 
 export interface ToolContext {
@@ -85,6 +87,13 @@ export interface ToolResult {
   content: string;
   isError?: boolean;
   metadata?: Record<string, unknown>;
+}
+
+export interface ToolProgress {
+  type: 'output' | 'status' | 'error' | 'complete';
+  content: string;
+  /** Milliseconds elapsed since tool execution started. */
+  elapsed?: number;
 }
 
 export interface StreamChunk {
@@ -234,4 +243,45 @@ export interface DelegationTask {
   priority: 'urgent' | 'normal' | 'low';
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
   result?: string;
+}
+
+// ── User Profile ──
+export interface UserProfile {
+  name: string;
+  preferredName?: string;
+  language: string;
+  timezone?: string;
+  notes?: string;
+}
+
+// ── Character System ──
+export interface CharacterTrait {
+  dimension: string;
+  value: number;
+  label: string;
+}
+
+export interface CharacterVoice {
+  tone: string;
+  style: string;
+  avoids: string;
+}
+
+export interface Character {
+  id: string;
+  name: string;
+  tagline: string;
+  traits: CharacterTrait[];
+  voice: CharacterVoice;
+  coreValues: string[];
+  boundaries: string[];
+  greeting: string;
+  ttsVoiceId?: string;
+  soulPrompt: string;
+}
+
+export interface AgentSoul {
+  character: Character;
+  userProfile?: UserProfile;
+  compiledPrompt: string;
 }

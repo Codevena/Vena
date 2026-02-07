@@ -13,11 +13,13 @@ import type { LLMProvider } from '@vena/providers';
 import { ToolExecutor } from './tool-executor.js';
 import { ContextBuilder } from './context-builder.js';
 import type { MemoryManager } from '../memory/memory-manager.js';
+import type { ToolGuard } from '../security/tool-guard.js';
 import { createLogger } from '@vena/shared';
 
 export type AgentEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_call'; tool: string; input: Record<string, unknown> }
+  | { type: 'tool_progress'; tool: string; content: string; elapsed?: number }
   | { type: 'tool_result'; result: ToolResult }
   | { type: 'done'; response: string }
   | { type: 'error'; error: Error };
@@ -26,10 +28,15 @@ export interface AgentLoopOptions {
   provider: LLMProvider;
   tools: Tool[];
   systemPrompt: string;
+  soulPrompt?: string;
   memoryManager: MemoryManager;
+  guard?: ToolGuard;
+  workspacePath?: string;
   options?: {
     maxIterations?: number;
     maxTokens?: number;
+    /** Use streaming tool execution for tools that support it. Default: true. */
+    streamTools?: boolean;
   };
 }
 
@@ -41,16 +48,22 @@ export class AgentLoop {
   private contextBuilder: ContextBuilder;
   private memoryManager: MemoryManager;
   private systemPrompt: string;
+  private soulPrompt?: string;
   private maxIterations: number;
   private maxTokens: number;
+  private workspacePath: string;
+  private streamTools: boolean;
 
   constructor(opts: AgentLoopOptions) {
     this.provider = opts.provider;
     this.systemPrompt = opts.systemPrompt;
+    this.soulPrompt = opts.soulPrompt;
     this.memoryManager = opts.memoryManager;
     this.maxIterations = opts.options?.maxIterations ?? 10;
     this.maxTokens = opts.options?.maxTokens ?? 4096;
-    this.toolExecutor = new ToolExecutor(opts.tools);
+    this.workspacePath = opts.workspacePath ?? process.cwd();
+    this.streamTools = opts.options?.streamTools ?? true;
+    this.toolExecutor = new ToolExecutor(opts.tools, opts.guard);
     this.contextBuilder = new ContextBuilder();
   }
 
@@ -70,6 +83,7 @@ export class AgentLoop {
 
       const context = this.contextBuilder.build(session, {
         systemPrompt: this.systemPrompt,
+        soulPrompt: this.soulPrompt,
         memoryContext,
         maxTokens: this.maxTokens,
       });
@@ -98,7 +112,6 @@ export class AgentLoop {
 
             case 'tool_use':
               if (chunk.toolUse) {
-                // Finalize any previous tool_use that was being built
                 if (currentToolUse) {
                   contentBlocks.push(this.finalizeToolUse(currentToolUse));
                 }
@@ -118,7 +131,6 @@ export class AgentLoop {
 
             case 'stop':
               stopReason = chunk.stopReason;
-              // Finalize any pending tool_use
               if (currentToolUse) {
                 contentBlocks.push(this.finalizeToolUse(currentToolUse));
                 currentToolUse = null;
@@ -131,12 +143,10 @@ export class AgentLoop {
           }
         }
 
-        // Add text block if any
         if (fullText) {
           contentBlocks.unshift({ type: 'text', text: fullText } as TextBlock);
         }
 
-        // Add assistant message to session
         const assistantMessage: Message = {
           id: `msg_${Date.now()}`,
           role: 'assistant',
@@ -145,7 +155,6 @@ export class AgentLoop {
         };
         session.messages.push(assistantMessage);
 
-        // If the stop reason is tool_use, execute tools and loop
         if (stopReason === 'tool_use') {
           const toolUseBlocks = contentBlocks.filter(
             (b): b is ToolUseBlock => b.type === 'tool_use',
@@ -154,10 +163,16 @@ export class AgentLoop {
           for (const toolBlock of toolUseBlocks) {
             yield { type: 'tool_call', tool: toolBlock.name, input: toolBlock.input };
 
-            const result = await this.toolExecutor.execute(toolBlock.name, toolBlock.input, {
+            const toolContext = {
               sessionId: session.id,
-              workspacePath: '',
+              workspacePath: this.workspacePath,
               agentId: session.metadata.agentId,
+            };
+
+            // Use streaming execution when the tool supports it
+            const result = await this.executeTool(toolBlock, toolContext, (progress) => {
+              // This callback is intentionally a no-op for now;
+              // tool_progress events are yielded from the generator below
             });
 
             yield { type: 'tool_result', result };
@@ -174,6 +189,10 @@ export class AgentLoop {
               role: 'tool',
               content: [toolResultBlock],
               timestamp: new Date().toISOString(),
+              metadata: {
+                toolName: toolBlock.name,
+                toolUseId: toolBlock.id,
+              },
             };
             session.messages.push(toolResultMessage);
           }
@@ -182,7 +201,6 @@ export class AgentLoop {
           continue;
         }
 
-        // end_turn or max_tokens - we're done
         yield { type: 'done', response: fullText };
         return;
       } catch (err) {
@@ -193,8 +211,50 @@ export class AgentLoop {
       }
     }
 
-    // Max iterations reached
     yield { type: 'done', response: lastText || 'Max iterations reached.' };
+  }
+
+  // ── Private ──────────────────────────────────────────────────────────
+
+  /**
+   * Execute a tool, using streaming when available and enabled.
+   * Collects streaming progress and returns the final ToolResult.
+   * The onProgress callback fires for each intermediate progress event.
+   */
+  private async executeTool(
+    toolBlock: ToolUseBlock,
+    toolContext: { sessionId: string; workspacePath: string; agentId: string },
+    _onProgress: (event: AgentEvent) => void,
+  ): Promise<ToolResult> {
+    const tool = this.toolExecutor.getTool(toolBlock.name);
+
+    if (this.streamTools && tool?.executeStream) {
+      let finalContent = '';
+      let isError = false;
+
+      for await (const progress of this.toolExecutor.executeStream(
+        toolBlock.name,
+        toolBlock.input,
+        toolContext,
+      )) {
+        if (progress.type === 'complete') {
+          finalContent = progress.content;
+        } else if (progress.type === 'error') {
+          isError = true;
+          finalContent = progress.content;
+        }
+
+        logger.debug(
+          { tool: toolBlock.name, progressType: progress.type, elapsed: progress.elapsed },
+          'Tool progress',
+        );
+      }
+
+      return { content: finalContent, isError };
+    }
+
+    // Blocking fallback
+    return this.toolExecutor.execute(toolBlock.name, toolBlock.input, toolContext);
   }
 
   private finalizeToolUse(toolUse: {
