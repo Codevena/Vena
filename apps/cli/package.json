@@ -13,14 +13,14 @@
   "keywords": ["vena", "ai", "agent", "cli"],
   "files": ["dist"],
   "bin": {
-    "vena": "./dist/index.js"
+    "vena": "./dist/bootstrap.js"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/bootstrap.js",
+  "types": "./dist/bootstrap.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/bootstrap.d.ts",
+      "import": "./dist/bootstrap.js"
     }
   },
   "scripts": {
@@ -28,7 +28,7 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/index.js"
+    "start": "node dist/bootstrap.js"
   },
   "dependencies": {
     "@vena/shared": "workspace:*",
