@@ -22,6 +22,7 @@ const providerConfigSchema = z.object({
 });
 
 const geminiConfigSchema = providerConfigSchema.extend({
+  transport: z.enum(['api', 'cli']).optional(),
   vertexai: z.boolean().optional(),
   project: z.string().optional(),
   location: z.string().optional(),

@@ -371,7 +371,7 @@ configCommand
 
 configCommand
   .command('gemini-auth')
-  .description('Authorize Gemini via OAuth (Gemini CLI-style flow)')
+  .description('Authorize Gemini via OAuth (Vertex AI / Google Cloud)')
   .option('--redirect <url>', 'Override OAuth redirect URI')
   .option('--client-id <id>', 'OAuth client ID (optional)')
   .option('--client-secret <secret>', 'OAuth client secret (optional)')

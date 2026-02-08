@@ -15,6 +15,7 @@ import {
   openBrowser,
   shouldUseManualOAuthFlow,
   waitForOAuthCallback,
+  findInPath,
 } from '../lib/oauth.js';
 import {
   extractGeminiCliCredentials,
@@ -89,7 +90,7 @@ const PROVIDER_AUTH_HELP: Record<string, {
     apiKeyUrl: 'https://aistudio.google.com/app/apikey',
     oauthUrl: 'https://console.cloud.google.com/apis/credentials',
     oauthGuideUrl: 'https://ai.google.dev/palm_docs/oauth_quickstart',
-    oauthNote: 'Use `vena config gemini-auth` for Gemini OAuth or paste an existing token. For Workspace tools, run: vena config google-auth',
+    oauthNote: 'For Gemini CLI, install `gemini` and run it once to login. For Vertex AI OAuth, run: vena config gemini-auth. For Workspace tools, run: vena config google-auth',
   },
 };
 
@@ -126,6 +127,8 @@ type OAuthFlowResult = {
   auth: AuthConfig;
   extras?: Record<string, unknown>;
 };
+
+type AuthMethod = 'api_key' | 'oauth_login' | 'oauth_token' | 'cli';
 
 async function promptToken(message: string): Promise<string> {
   const tokenResponse = await prompts({
@@ -918,13 +921,13 @@ export const onboardCommand = new Command('onboard')
     // ── Step 3: Authentication ──────────────────────────────────────
     let apiKey = '';
     let authType: 'api_key' | 'oauth_token' = 'api_key';
+    let selectedAuthMethod: AuthMethod = 'api_key';
     let providerAuth: AuthConfig | null = null;
     let providerExtras: Record<string, unknown> = {};
 
     if (providerKey !== 'ollama') {
       printStepHeader(3, totalSteps, 'Authentication', `Choose how to authenticate with ${provider}.`);
 
-      type AuthMethod = 'api_key' | 'oauth_login' | 'oauth_token';
       const choices: Array<{ title: string; value: AuthMethod }> = [
         { title: `${colors.primary('●')} API Key       ${colors.dim('─ Standard API key from provider dashboard')}`, value: 'api_key' },
       ];
@@ -935,8 +938,7 @@ export const onboardCommand = new Command('onboard')
         choices.push({ title: `${colors.primary('●')} Codex OAuth  ${colors.dim('─ ChatGPT sign-in (recommended)')}`, value: 'oauth_login' });
         choices.push({ title: `${colors.primary('●')} Paste Token  ${colors.dim('─ OAuth/Bearer token (Advanced)')}`, value: 'oauth_token' });
       } else if (providerKey === 'gemini') {
-        choices.push({ title: `${colors.primary('●')} Gemini OAuth ${colors.dim('─ Gemini CLI-style OAuth')}`, value: 'oauth_login' });
-        choices.push({ title: `${colors.primary('●')} Paste Token  ${colors.dim('─ OAuth/Bearer token (Advanced)')}`, value: 'oauth_token' });
+        choices.push({ title: `${colors.primary('●')} Gemini CLI   ${colors.dim('─ Use local Gemini CLI (no API key)')}`, value: 'cli' });
       } else {
         choices.push({ title: `${colors.primary('●')} OAuth/Bearer  ${colors.dim('─ Paste an access token (Advanced)')}`, value: 'oauth_token' });
       }
@@ -956,8 +958,11 @@ export const onboardCommand = new Command('onboard')
       });
 
       const authMethod = authChoice.authMethod as AuthMethod;
+      selectedAuthMethod = authMethod;
       authType = authMethod === 'api_key' ? 'api_key' : 'oauth_token';
-      printAuthHelp(providerKey, authType);
+      if (authMethod !== 'cli') {
+        printAuthHelp(providerKey, authType);
+      }
 
       if (authMethod === 'api_key') {
         console.log();
@@ -988,6 +993,18 @@ export const onboardCommand = new Command('onboard')
         }
         providerAuth = { type: 'oauth_token', oauthToken: token };
         console.log(`  ${colors.success('✓')} ${colors.dim('OAuth token saved')}`);
+      } else if (authMethod === 'cli') {
+        const geminiPath = findInPath('gemini');
+        if (!geminiPath) {
+          console.log();
+          console.log(chalk.red('  Gemini CLI not found.'));
+          console.log(chalk.dim('  Install it first: brew install gemini-cli (or npm install -g @google/gemini-cli).'));
+          console.log(chalk.dim('  Then run `gemini` once to complete login.'));
+          console.log();
+          process.exit(1);
+        }
+        providerExtras = { ...providerExtras, transport: 'cli' };
+        console.log(`  ${colors.success('✓')} ${colors.dim('Gemini CLI selected')}`);
       } else {
         let result: OAuthFlowResult | null = null;
         if (providerKey === 'anthropic') {
@@ -1211,6 +1228,14 @@ export const onboardCommand = new Command('onboard')
     const buildProviderEntry = () => {
       if (providerKey === 'ollama') {
         return { ollama: { baseUrl: 'http://localhost:11434', model: selectedModel } };
+      }
+      if (selectedAuthMethod === 'cli') {
+        return {
+          [providerKey]: {
+            model: selectedModel,
+            ...providerExtras,
+          },
+        };
       }
       if (authType === 'oauth_token') {
         const auth = providerAuth ?? undefined;

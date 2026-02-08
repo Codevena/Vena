@@ -11,6 +11,7 @@ import {
   AnthropicProvider,
   OpenAIProvider,
   GeminiProvider,
+  GeminiCliProvider,
   OllamaProvider,
 } from '@vena/providers';
 
@@ -86,6 +87,14 @@ export function createProvider(
 
     case 'gemini': {
       const cfg = config.providers.gemini;
+      if (cfg?.transport === 'cli') {
+        const model = overrideModel ?? cfg?.model ?? 'gemini-3-flash-preview';
+        return {
+          provider: new GeminiCliProvider({ model }),
+          model,
+          providerName,
+        };
+      }
       if (!cfg?.apiKey && !cfg?.auth) {
         throw new Error('Gemini not configured. Set providers.gemini.apiKey or auth in ~/.vena/vena.json');
       }
