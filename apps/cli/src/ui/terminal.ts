@@ -1,4 +1,7 @@
 import chalk from 'chalk';
+import { marked } from 'marked';
+import { markedTerminal } from 'marked-terminal';
+import { highlight } from 'cli-highlight';
 
 // ── Color Palette ──────────────────────────────────────────────────────
 export const colors = {
@@ -191,4 +194,112 @@ export function sectionHeader(title: string): string {
 export function kvLine(key: string, value: string, keyWidth = 20): string {
   const paddedKey = key.padEnd(keyWidth);
   return colors.dim(paddedKey) + colors.white(value);
+}
+
+// ── Markdown Rendering ────────────────────────────────────────────────
+
+// Configure marked with terminal renderer once
+marked.use(
+  markedTerminal({
+    code: (code: string, lang?: string) => {
+      try {
+        return highlight(code, { language: lang || 'auto', ignoreIllegals: true });
+      } catch {
+        return code;
+      }
+    },
+    codespan: (text: string) => colors.secondary(text),
+    heading: (text: string) => '\n' + colors.primary(chalk.bold(text)) + '\n',
+    strong: (text: string) => chalk.bold(text),
+    em: (text: string) => chalk.italic(text),
+    listitem: (text: string) => '  ' + colors.primary('•') + ' ' + text,
+    blockquote: (text: string) => colors.dim('  │ ') + colors.dim(text),
+    link: (href: string, _title: string | null, text: string) =>
+      colors.secondary(text) + colors.dim(` (${href})`),
+    hr: () => colors.dim('─'.repeat(40)),
+    paragraph: (text: string) => text + '\n',
+    tab: 2,
+  }) as any,
+);
+
+export function renderMarkdown(text: string): string {
+  try {
+    const result = marked.parse(text);
+    if (typeof result === 'string') {
+      return result.replace(/\n$/, '');
+    }
+    return text;
+  } catch {
+    return text;
+  }
+}
+
+// ── Tool Call/Result Rendering ────────────────────────────────────────
+
+const TOOL_ICONS: Record<string, string> = {
+  bash: '$',
+  read: 'R',
+  write: 'W',
+  edit: 'E',
+  web_browse: 'G',
+  browser: 'B',
+  google: 'G',
+  consult_agent: 'C',
+  delegate_task: 'D',
+};
+
+function getToolArg(toolName: string, args: Record<string, unknown>): string {
+  switch (toolName) {
+    case 'bash':
+      return String(args['command'] ?? '').slice(0, 60);
+    case 'read':
+    case 'write':
+    case 'edit':
+      return String(args['path'] ?? '').replace(/^.*\//, '');
+    case 'web_browse':
+      return String(args['url'] ?? '').slice(0, 60);
+    case 'browser':
+      return String(args['action'] ?? '');
+    case 'google':
+      return String(args['action'] ?? args['resource'] ?? '');
+    case 'consult_agent':
+    case 'delegate_task':
+      return String(args['agentId'] ?? args['agent_id'] ?? '');
+    default:
+      return '';
+  }
+}
+
+export function renderToolCall(toolName: string, args: Record<string, unknown>): string {
+  const icon = TOOL_ICONS[toolName] ?? '?';
+  const arg = getToolArg(toolName, args);
+  return `  ${colors.dim('[')}${colors.secondary(icon)}${colors.dim(']')} ${colors.white(toolName)} ${colors.dim(arg)}`;
+}
+
+export function renderToolResult(result: { content: string; isError?: boolean }, toolName: string): string {
+  if (result.isError) {
+    const errMsg = result.content.split('\n')[0]?.slice(0, 80) ?? 'Unknown error';
+    return `  ${colors.error('✗')} ${colors.white(toolName)} ${colors.error(errMsg)}`;
+  }
+
+  const lines = result.content.split('\n');
+  const maxLines = 6;
+  const maxChars = 80;
+
+  const preview = lines
+    .slice(0, maxLines)
+    .map(l => (l.length > maxChars ? l.slice(0, maxChars) + '...' : l))
+    .map(l => `  ${colors.dim(l)}`)
+    .join('\n');
+
+  const more = lines.length > maxLines ? `\n  ${colors.dim(`... ${lines.length - maxLines} more lines`)}` : '';
+
+  return `  ${colors.success('✓')} ${colors.white(toolName)}${preview ? '\n' + preview : ''}${more}`;
+}
+
+// ── Elapsed Time ──────────────────────────────────────────────────────
+
+export function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }

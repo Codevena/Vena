@@ -10,8 +10,15 @@
     "url": "https://github.com/Codevena/Vena.git",
     "directory": "apps/cli"
   },
-  "keywords": ["vena", "ai", "agent", "cli"],
-  "files": ["dist"],
+  "keywords": [
+    "vena",
+    "ai",
+    "agent",
+    "cli"
+  ],
+  "files": [
+    "dist"
+  ],
   "bin": {
     "vena": "./dist/bootstrap.js"
   },
@@ -31,25 +38,28 @@
     "start": "node dist/bootstrap.js"
   },
   "dependencies": {
-    "@vena/shared": "workspace:*",
-    "@vena/providers": "workspace:*",
+    "@vena/agents": "workspace:*",
+    "@vena/channels": "workspace:*",
+    "@vena/computer": "workspace:*",
     "@vena/core": "workspace:*",
     "@vena/gateway": "workspace:*",
-    "@vena/channels": "workspace:*",
-    "@vena/semantic-memory": "workspace:*",
-    "@vena/voice": "workspace:*",
-    "@vena/agents": "workspace:*",
-    "@vena/skills": "workspace:*",
-    "@vena/computer": "workspace:*",
     "@vena/integrations": "workspace:*",
-    "commander": "^13.1.0",
+    "@vena/providers": "workspace:*",
+    "@vena/semantic-memory": "workspace:*",
+    "@vena/shared": "workspace:*",
+    "@vena/skills": "workspace:*",
+    "@vena/voice": "workspace:*",
     "chalk": "^5.4.1",
+    "cli-highlight": "^2.1.11",
+    "commander": "^13.1.0",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
     "ora": "^8.1.1",
     "prompts": "^2.4.2"
   },
   "devDependencies": {
-    "typescript": "~5.7.3",
     "@types/node": "^22.0.0",
-    "@types/prompts": "^2.4.9"
+    "@types/prompts": "^2.4.9",
+    "typescript": "~5.7.3"
   }
 }
