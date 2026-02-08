@@ -7,7 +7,7 @@ Vena is an open-source AI agent platform built as a TypeScript monorepo (pnpm wo
 **Owner:** Markus (@Codevena)
 **Repo:** https://github.com/Codevena/Vena.git
 **Branch:** `master`
-**Size:** 116 TypeScript source files, ~15,300 lines, 12 packages, 8 test files (67 tests)
+**Size:** 116 TypeScript source files, ~15,300 lines, 12 packages, 14 test files (113 tests)
 
 ## Rules
 
@@ -121,18 +121,40 @@ All providers emit `AsyncIterable<StreamChunk>` with types: `text`, `tool_use`, 
 - **Gateway auth:** API key middleware (Bearer / X-API-Key), rate limiting, message size limits, Zod request validation
 - **Skills hardening:** XML escaping in injector, name/length/content validation in parser
 - **Agent identity:** 5 characters (Nova/Sage/Spark/Ghost/Atlas), SoulCompiler, UserProfile, character-aware voice
-- **Tests:** 8 test files, 67 unit tests (vitest) covering security, identity, gateway, skills
+- **Tests:** 14 test files, 113 tests (vitest) — unit tests + E2E covering gateway, tools, memory, knowledge graph, mesh network
 
 ### ALL 12 PACKAGES WIRED
 Every package is now connected end-to-end in `vena start`. Zero unwired packages remaining.
 
-### NEXT PRIORITY (launch checklist):
-1. **README.md** — Hero section, feature grid, quick start, architecture diagram, config reference
-2. **`vena config google-auth`** — OAuth flow CLI command so users can authorize Google Workspace
-3. **npm publish prep** — package.json metadata, LICENSE, .npmignore, `vena` global bin
-4. **E2E smoke tests** — start gateway, send HTTP message, verify response, shutdown
-5. **GitHub Actions CI** — build + test + typecheck on push
-6. **Documentation site** — docs/ with guides for each package
+### E2E VERIFIED (proven by tests, no API keys needed):
+- **Gateway:** HTTP endpoints (health, status, agents, sessions, message) + WebSocket real-time — 9 tests
+- **Knowledge Graph:** SQLite entity CRUD, relationships, BFS traversal, shortest path, stats — 7 tests
+- **Memory:** File-based logging, query search, long-term memory, graceful degradation — 7 tests
+- **Core Tools:** WriteTool, ReadTool, EditTool (real file I/O), WebBrowseTool (real HTTP fetch) — 10 tests
+- **Mesh Network:** Capability-based routing, topology, MessageBus pub/sub, SharedMemory ACL, Delegation tracking — 11 tests
+
+### NOT YET E2E VERIFIED (need API keys / external services):
+- **Voice:** TTS/STT implementations are real (ElevenLabs, Whisper, Deepgram API calls), but untested with live keys
+- **Telegram:** grammY integration is real, needs Bot Token for live test
+- **WhatsApp:** Baileys integration is real, needs QR scan for live test
+- **LLM Agent Loop:** Real agentic loop (LLM → tool parse → execute → re-enter), needs provider API key
+- **Agent-to-Agent Communication:** ConsultationManager + DelegationManager exist but are NOT wired into start.ts message flow
+
+### LAUNCH-READY (completed):
+- [x] **README.md** — Hero, comparison table, quick start, features, architecture, CLI, API, config
+- [x] **LICENSE** — MIT
+- [x] **npm publish prep** — package.json metadata (license, repository, keywords), .npmignore, files
+- [x] **install.sh** — URLs fixed to Codevena/Vena
+- [x] **E2E tests** — 5 test suites, 44 tests proving real functionality
+- [x] **CONTRIBUTING.md** — Dev setup, code style, commit guidelines, PR process
+- [x] **Issue templates** — Bug report + feature request
+
+### NEXT PRIORITY:
+1. **`vena config google-auth`** — OAuth flow CLI command so users can authorize Google Workspace
+2. **GitHub Actions CI** — build + test + typecheck on push
+3. **Wire ConsultationManager + DelegationManager** into start.ts for real agent-to-agent communication
+4. **Live Telegram test** — Verify with real Bot Token
+5. **Documentation site** — docs/ with guides for each package
 
 ## Build Commands
 
@@ -146,7 +168,7 @@ pnpm --filter @vena/shared build && pnpm -r build  # Rebuild from shared up
 ## Testing
 
 ```bash
-# Unit tests (67 tests across 8 files)
+# All tests (113 tests across 14 files)
 pnpm test                       # Run all tests via vitest
 npx vitest run                  # Run from root directly
 
@@ -171,4 +193,10 @@ node apps/cli/dist/index.js chat --character ghost  # Test character selection
 | `@vena/gateway` | `middleware/__tests__/auth.test.ts` | 3 — auth config structure |
 | `@vena/gateway` | `middleware/__tests__/rate-limit.test.ts` | 7 — window enforcement, burst, reset, WS limiting |
 | `@vena/shared` | `__tests__/characters.test.ts` | 8 — all characters exist, required fields, getCharacter |
-| `@vena/skills` | `__tests__/injector.test.ts` | 7 — XML escaping, prompt injection prevention |
+| `@vena/skills` | `__tests__/injector.test.ts` | 8 — XML escaping, prompt injection prevention |
+| `@vena/skills` | `__tests__/loader.test.ts` | 1 — skill loading |
+| **E2E** | `tests/e2e-gateway.test.ts` | 9 — HTTP endpoints, WebSocket, validation, message echo |
+| **E2E** | `tests/e2e-knowledge-graph.test.ts` | 7 — SQLite CRUD, relationships, BFS, shortest path |
+| **E2E** | `tests/e2e-memory.test.ts` | 7 — daily log, search, long-term, graceful degradation |
+| **E2E** | `tests/e2e-tools.test.ts` | 10 — write/read/edit real files, HTTP fetch, ToolGuard |
+| **E2E** | `tests/e2e-mesh.test.ts` | 11 — routing, topology, MessageBus, SharedMemory, Delegation |
