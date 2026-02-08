@@ -19,13 +19,16 @@ import {
   BrowserTool,
   GoogleTool,
   ToolGuard,
+  ConsultTool,
+  DelegateTool,
 } from '@vena/core';
 import type { BrowserAdapter, GoogleAdapters } from '@vena/core';
 import type { SecurityPolicy, SemanticMemoryProvider } from '@vena/core';
 import { MemoryEngine } from '@vena/semantic-memory';
 import type { LLMProvider } from '@vena/providers';
 import { VoiceMessagePipeline, TextToSpeech, SpeechToText } from '@vena/voice';
-import { AgentRegistry, MessageBus, MeshNetwork } from '@vena/agents';
+import { AgentRegistry, MessageBus, MeshNetwork, IntentRouter } from '@vena/agents';
+import type { AgentDescriptor } from '@vena/agents';
 import { SkillLoader, SkillRegistry, SkillInjector } from '@vena/skills';
 import {
   loadConfig,
@@ -201,7 +204,7 @@ async function showBootSequence(config: VenaConfig, results: BootResults): Promi
   }
 
   if (results.agentNames.length > 1) {
-    await spinnerLine('Mesh network connected...', 300);
+    await spinnerLine('Mesh network + intent routing...', 300);
   }
 
   console.log();
@@ -526,7 +529,106 @@ export const startCommand = new Command('start')
     const agentLoops = new Map<string, AgentLoop>();
     const agentMemory = new Map<string, MemoryManager>();
     const agentProviderNames = new Map<string, string>();
+    const agentProviders = new Map<string, LLMProvider>();
     const registry = config.agents.registry;
+
+    // Build agent info list for mesh tools and intent router
+    const agentInfoList = registry.map((a) => ({
+      id: a.id,
+      name: a.name,
+      capabilities: a.capabilities,
+    }));
+
+    // Build agents-context XML for system prompt injection (multi-agent only)
+    function buildAgentsContext(selfAgentId: string): string | undefined {
+      if (registry.length <= 1) return undefined;
+      const peers = registry.filter((a) => a.id !== selfAgentId);
+      if (peers.length === 0) return undefined;
+
+      const lines = [
+        'You are part of a multi-agent team. You can consult or delegate tasks to peer agents using the consult_agent and delegate_task tools.',
+        '',
+        'Available peers:',
+        ...peers.map(
+          (a) => `- ${a.name} (id: ${a.id}): capabilities=[${a.capabilities.join(', ')}]`,
+        ),
+        '',
+        'Use consult_agent to ask a peer a question. Use delegate_task to hand off a task entirely.',
+      ];
+      return lines.join('\n');
+    }
+
+    // Leaf-loop runner: creates a fresh AgentLoop WITHOUT mesh tools (prevents recursion)
+    async function runLeafAgent(
+      targetAgentId: string,
+      prompt: string,
+      role: 'consult' | 'delegate',
+    ): Promise<string> {
+      const targetConfig = registry.find((a) => a.id === targetAgentId);
+      if (!targetConfig) return `Agent "${targetAgentId}" not found.`;
+
+      const trustLevel = (targetConfig.trustLevel ?? config.security.defaultTrustLevel ?? 'limited') as
+        'full' | 'limited' | 'readonly';
+      const { tools: leafTools, guard: leafGuard } = buildToolsForTrust(trustLevel);
+
+      const provider = agentProviders.get(targetAgentId) ?? defaultProvider;
+      const mm = agentMemory.get(targetAgentId);
+      const leafMemory = mm ?? new MemoryManager({
+        workspacePath: DATA_DIR,
+        agentId: targetAgentId,
+        semantic: semanticProvider,
+      });
+
+      const systemPrefix = role === 'consult'
+        ? 'A peer agent is consulting you. Answer their question concisely.'
+        : 'A peer agent is delegating a task to you. Complete it and report the result.';
+
+      const leafLoop = new AgentLoop({
+        provider,
+        tools: leafTools, // No ConsultTool/DelegateTool — structurally prevents recursion
+        systemPrompt: `${systemPrefix}\n\n${targetConfig.persona ?? 'You are a helpful AI assistant.'}`,
+        skillsContext: skillsContext || undefined,
+        memoryManager: leafMemory,
+        guard: leafGuard,
+        workspacePath: DATA_DIR,
+        options: {
+          maxIterations: 5,
+          maxTokens: 2048,
+          streamTools: true,
+        },
+      });
+
+      const ephemeralSession: Session = {
+        id: `sess_leaf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        channelName: 'mesh',
+        sessionKey: `leaf:${targetAgentId}:${Date.now()}`,
+        messages: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        metadata: {
+          userId: 'mesh',
+          agentId: targetAgentId,
+          tokenCount: 0,
+          compactionCount: 0,
+        },
+      };
+
+      const userMessage: Message = {
+        id: `msg_leaf_${Date.now()}`,
+        role: 'user',
+        content: prompt,
+        timestamp: new Date().toISOString(),
+      };
+
+      let responseText = '';
+      for await (const event of leafLoop.run(userMessage, ephemeralSession)) {
+        if (event.type === 'text') responseText += event.text;
+        else if (event.type === 'done') responseText = event.response || responseText;
+        else if (event.type === 'error') return `Error: ${event.error.message}`;
+      }
+
+      return responseText || 'No response from agent.';
+    }
 
     for (const agentConfig of registry) {
       const trustLevel = (agentConfig.trustLevel ?? config.security.defaultTrustLevel ?? 'limited') as
@@ -543,6 +645,7 @@ export const startCommand = new Command('start')
         agentProvider = defaultProvider;
       }
       agentProviderNames.set(agentConfig.id, agentProviderName);
+      agentProviders.set(agentConfig.id, agentProvider);
 
       // Per-agent memory
       const mm = new MemoryManager({
@@ -555,11 +658,30 @@ export const startCommand = new Command('start')
       // Per-agent tools
       const { tools, guard } = buildToolsForTrust(trustLevel);
 
+      // Add mesh tools when multi-agent (consult + delegate)
+      if (registry.length > 1) {
+        tools.push(
+          new ConsultTool(
+            (targetId, question, _ctx) => runLeafAgent(targetId, question, 'consult'),
+            agentInfoList,
+            agentConfig.id,
+          ),
+        );
+        tools.push(
+          new DelegateTool(
+            (targetId, task, _ctx) => runLeafAgent(targetId, task, 'delegate'),
+            agentInfoList,
+            agentConfig.id,
+          ),
+        );
+      }
+
       const loop = new AgentLoop({
         provider: agentProvider,
         tools,
         systemPrompt: agentConfig.persona ?? 'You are a helpful AI assistant.',
         skillsContext: skillsContext || undefined,
+        agentsContext: buildAgentsContext(agentConfig.id),
         memoryManager: mm,
         guard,
         workspacePath: DATA_DIR,
@@ -581,6 +703,7 @@ export const startCommand = new Command('start')
 
     // ── Mesh Network (multi-agent routing) ───────────────────────────
     let mesh: MeshNetwork | undefined;
+    const defaultAgentId = firstAgentConfig?.id ?? 'main';
 
     if (registry.length > 1) {
       const agentReg = new AgentRegistry();
@@ -602,19 +725,31 @@ export const startCommand = new Command('start')
         });
       }
 
-      log.info({ agents: registry.length }, 'Mesh network initialized');
-    }
+      // Wire LLM-based intent router
+      const intentRouter = new IntentRouter(
+        (prompt: string) => collectStreamText(defaultProvider, prompt),
+        defaultAgentId,
+      );
+      const descriptors: AgentDescriptor[] = registry.map((a) => ({
+        id: a.id,
+        name: a.name,
+        persona: a.persona,
+        capabilities: a.capabilities,
+      }));
+      intentRouter.setAgents(descriptors);
+      mesh.setIntentRouter(intentRouter);
 
-    const defaultAgentId = firstAgentConfig?.id ?? 'main';
+      log.info({ agents: registry.length }, 'Mesh network + intent routing initialized');
+    }
 
     // ── Message Handler ─────────────────────────────────────────────
     let totalMessages = 0;
 
-    function selectAgent(content: string): string {
+    async function selectAgent(content: string): Promise<string> {
       if (!mesh || registry.length <= 1) return defaultAgentId;
 
       try {
-        return mesh.routeMessage(content, defaultAgentId);
+        return await mesh.routeMessageAsync(content, defaultAgentId);
       } catch {
         return defaultAgentId;
       }
@@ -643,7 +778,7 @@ export const startCommand = new Command('start')
       }
 
       // Route to best agent
-      const targetAgentId = selectAgent(content);
+      const targetAgentId = await selectAgent(content);
       const loop = agentLoops.get(targetAgentId) ?? agentLoops.get(defaultAgentId)!;
       const mm = agentMemory.get(targetAgentId) ?? agentMemory.get(defaultAgentId)!;
 
@@ -760,7 +895,8 @@ export const startCommand = new Command('start')
         if (shouldVoice) {
           try {
             // Find agent voiceId if configured
-            const targetAgent = registry.find(a => a.id === selectAgent(inbound.content));
+            const voiceTargetId = await selectAgent(inbound.content);
+            const targetAgent = registry.find(a => a.id === voiceTargetId);
             const audioBuffer = await voicePipeline.processOutgoing(response.text, targetAgent?.voiceId);
             outbound.media = [{
               type: 'voice' as const,

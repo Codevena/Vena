@@ -4,6 +4,8 @@ export type { AgentTemplate } from './agent-factory.js';
 export { MessageBus } from './message-bus.js';
 export type { BusMessage } from './message-bus.js';
 export { MeshNetwork } from './mesh-network.js';
+export { IntentRouter } from './intent-router.js';
+export type { AgentDescriptor, ClassifyFn } from './intent-router.js';
 export { ConsultationManager } from './consultation.js';
 export { SharedMemoryManager } from './shared-memory.js';
 export { DelegationManager } from './delegation.js';

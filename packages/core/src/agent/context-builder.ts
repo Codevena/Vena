@@ -4,6 +4,7 @@ export interface ContextBuildOptions {
   systemPrompt: string;
   soulPrompt?: string;
   skills?: string;
+  agentsContext?: string;
   memoryContext?: string;
   maxTokens?: number;
 }
@@ -31,6 +32,10 @@ export class ContextBuilder {
 
     if (options.skills) {
       systemPrompt += `\n\n<skills>\n${options.skills}\n</skills>`;
+    }
+
+    if (options.agentsContext) {
+      systemPrompt += `\n\n<agents>\n${options.agentsContext}\n</agents>`;
     }
 
     // Budget for messages = maxChars - system prompt size

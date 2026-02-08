@@ -16,6 +16,10 @@ export { BrowserTool } from './tools/browser-tool.js';
 export type { BrowserAdapter } from './tools/browser-tool.js';
 export { GoogleTool } from './tools/google-tool.js';
 export type { GoogleAdapters, GmailAdapter, CalendarAdapter, DriveAdapter, DocsAdapter, SheetsAdapter } from './tools/google-tool.js';
+export { ConsultTool } from './tools/consult-tool.js';
+export type { ConsultFn, AgentInfo as ConsultAgentInfo } from './tools/consult-tool.js';
+export { DelegateTool } from './tools/delegate-tool.js';
+export type { DelegateFn, AgentInfo as DelegateAgentInfo } from './tools/delegate-tool.js';
 
 export { MemoryManager } from './memory/memory-manager.js';
 export type { SemanticMemoryProvider, MemoryManagerOptions } from './memory/memory-manager.js';

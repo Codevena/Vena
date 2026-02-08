@@ -1,7 +1,10 @@
 import type { AgentProfile } from '@vena/shared';
-import { AgentError } from '@vena/shared';
+import { AgentError, createLogger } from '@vena/shared';
 import type { AgentRegistry } from './agent-registry.js';
 import type { MessageBus } from './message-bus.js';
+import type { IntentRouter } from './intent-router.js';
+
+const logger = createLogger('mesh-network');
 
 interface Edge {
   from: string;
@@ -10,11 +13,30 @@ interface Edge {
 
 export class MeshNetwork {
   private edges: Edge[] = [];
+  private intentRouter?: IntentRouter;
 
   constructor(
     private registry: AgentRegistry,
     private bus: MessageBus,
   ) {}
+
+  setIntentRouter(router: IntentRouter): void {
+    this.intentRouter = router;
+  }
+
+  async routeMessageAsync(message: string, fromAgentId: string): Promise<string> {
+    if (this.intentRouter) {
+      try {
+        const agentId = await this.intentRouter.route(message, fromAgentId);
+        logger.debug({ message: message.slice(0, 80), routed: agentId }, 'Intent-routed message');
+        return agentId;
+      } catch (err) {
+        logger.warn({ error: err }, 'Intent routing failed, falling back to keyword matching');
+      }
+    }
+
+    return this.routeMessage(message, fromAgentId);
+  }
 
   addAgent(profile: AgentProfile): void {
     this.registry.register(profile);
