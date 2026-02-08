@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "Vena AI Agent Platform - CLI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Codevena/Vena.git",
+    "directory": "apps/cli"
+  },
+  "keywords": ["vena", "ai", "agent", "cli"],
+  "files": ["dist"],
   "bin": {
     "vena": "./dist/index.js"
   },

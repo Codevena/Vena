@@ -1,0 +1,13 @@
+src/
+__tests__/
+*.test.ts
+*.spec.ts
+tsconfig.json
+tsconfig.*.json
+.eslintrc*
+.prettierrc*
+vitest.config.*
+*.map
+.turbo
+node_modules
+.DS_Store

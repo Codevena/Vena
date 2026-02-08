@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Vena - Open Source AI Agent Platform",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Codevena/Vena.git"
+  },
+  "homepage": "https://github.com/Codevena/Vena",
+  "bugs": {
+    "url": "https://github.com/Codevena/Vena/issues"
+  },
+  "keywords": ["ai", "agent", "llm", "multi-agent", "knowledge-graph", "voice", "typescript"],
   "type": "module",
   "engines": {
     "node": ">=20.0.0",
