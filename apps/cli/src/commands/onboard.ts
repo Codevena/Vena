@@ -544,7 +544,7 @@ async function runClaudeSetupTokenFlow(): Promise<OAuthFlowResult | null> {
   };
 }
 
-async function runGoogleWorkspaceOAuthFlow(): Promise<Record<string, unknown> | null> {
+async function runGoogleWorkspaceOAuthFlow(): Promise<{ clientId: string; clientSecret: string; scopes: string[] } | null> {
   console.log();
   console.log(chalk.bold('  Google Workspace OAuth'));
   console.log(chalk.dim('  Authorize Gmail, Docs, Sheets, Calendar, Drive.'));
@@ -1193,7 +1193,7 @@ export const onboardCommand = new Command('onboard')
 
     const features = (featureResponse.features as string[]) ?? [];
 
-    let googleConfig: Record<string, unknown> | null = null;
+    let googleConfig: { clientId: string; clientSecret: string; scopes: string[] } | null = null;
     if (features.includes('google')) {
       googleConfig = await runGoogleWorkspaceOAuthFlow();
     }

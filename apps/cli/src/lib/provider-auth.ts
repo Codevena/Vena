@@ -114,8 +114,9 @@ export function extractGeminiCliCredentials(): OAuthClientInfo | null {
 
     const idMatch = content.match(/(\d+-[a-z0-9]+\.apps\.googleusercontent\.com)/);
     const secretMatch = content.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
-    if (idMatch) {
-      cachedGeminiClient = { clientId: idMatch[1], clientSecret: secretMatch?.[1] };
+    const clientId = idMatch?.[1];
+    if (clientId) {
+      cachedGeminiClient = { clientId, clientSecret: secretMatch?.[1] };
       return cachedGeminiClient;
     }
   } catch {
@@ -137,7 +138,8 @@ function extractOpenAiClientIdFromContent(content: string): string | null {
   }
 
   const inlineMatch = content.match(/client_id["']?\s*[:=]\s*["']([^"']+)["']/);
-  if (inlineMatch) return inlineMatch[1];
+  const inlineId = inlineMatch?.[1];
+  if (inlineId) return inlineId;
 
   const oaicpMatch = content.match(/\boaicp-[A-Za-z0-9_-]+\b/);
   if (oaicpMatch) return oaicpMatch[0];

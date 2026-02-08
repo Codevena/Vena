@@ -153,7 +153,7 @@ export async function waitForOAuthCallback(params: {
   const hostname = redirectUrl.hostname || 'localhost';
   const port = redirectUrl.port
     ? Number(redirectUrl.port)
-    : (redirectUrl.protocol === 'https:' ? 443 : 80);
+    : 80;
   const expectedPath = redirectUrl.pathname || '/';
 
   return await new Promise<{ code: string; state?: string }>((resolve, reject) => {
