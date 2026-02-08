@@ -1,5 +1,4 @@
 import { GoogleGenAI } from '@google/genai';
-import { OAuth2Client, UserRefreshClient } from 'google-auth-library';
 import type {
   ChatParams,
   Message,
@@ -48,36 +47,6 @@ export class GeminiProvider implements LLMProvider {
     }
   }
 
-  private buildGoogleAuthClient(auth: AuthConfig): OAuth2Client {
-    if (auth.refreshToken) {
-      const client = new UserRefreshClient({
-        clientId: auth.clientId,
-        clientSecret: auth.clientSecret,
-        refreshToken: auth.refreshToken,
-      });
-      if (auth.oauthToken) {
-        client.setCredentials({
-          access_token: auth.oauthToken,
-          refresh_token: auth.refreshToken,
-          expiry_date: auth.expiresAt ?? undefined,
-        });
-      }
-      return client;
-    }
-
-    const client = new OAuth2Client({
-      clientId: auth.clientId,
-      clientSecret: auth.clientSecret,
-    });
-    if (auth.oauthToken) {
-      client.setCredentials({
-        access_token: auth.oauthToken,
-        expiry_date: auth.expiresAt ?? undefined,
-      });
-    }
-    return client;
-  }
-
   private async ensureClient(): Promise<GoogleGenAI> {
     if (this.initialized) return this.client;
 
@@ -95,14 +64,23 @@ export class GeminiProvider implements LLMProvider {
       if (!project || !location) {
         throw new ProviderError('Gemini OAuth requires project and location for Vertex AI', 'gemini');
       }
+      if (!auth.refreshToken || !auth.clientId) {
+        throw new ProviderError('Gemini OAuth requires refreshToken and clientId for Vertex AI', 'gemini');
+      }
 
-      const authClient = this.buildGoogleAuthClient(auth);
       this.client = new GoogleGenAI({
         vertexai: true,
         project,
         location,
         apiVersion: this.options.apiVersion,
-        googleAuthOptions: { authClient },
+        googleAuthOptions: {
+          credentials: {
+            type: 'authorized_user',
+            client_id: auth.clientId,
+            client_secret: auth.clientSecret,
+            refresh_token: auth.refreshToken,
+          },
+        },
       });
       this.initialized = true;
       return this.client;
