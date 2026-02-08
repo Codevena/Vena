@@ -10,3 +10,4 @@ workspace/sessions/*
 !workspace/sessions/.gitkeep
 .DS_Store
 coverage/
+openclaw/

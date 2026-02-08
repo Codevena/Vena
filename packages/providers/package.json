@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Codevena/Vena.git", "directory": "packages/providers" },
+  "keywords": ["vena", "llm", "anthropic", "openai", "gemini", "ollama"],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -22,7 +25,8 @@
     "@vena/shared": "workspace:*",
     "@anthropic-ai/sdk": "^0.39.0",
     "openai": "^4.77.0",
-    "@google/genai": "^0.7.0"
+    "@google/genai": "^0.7.0",
+    "google-auth-library": "^9.15.1"
   },
   "devDependencies": {
     "typescript": "~5.7.3",

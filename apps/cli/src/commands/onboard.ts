@@ -4,8 +4,35 @@ import prompts from 'prompts';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { VenaConfig } from '@vena/shared';
+import type { AuthConfig, VenaConfig } from '@vena/shared';
 import { listCharacters } from '@vena/shared';
+import { GoogleAuth } from '@vena/integrations';
+import {
+  canUseLocalCallback,
+  extractOAuthCode,
+  extractOAuthCodeAndState,
+  generatePkce,
+  openBrowser,
+  shouldUseManualOAuthFlow,
+  waitForOAuthCallback,
+} from '../lib/oauth.js';
+import {
+  extractGeminiCliCredentials,
+  extractOpenAiCodexClient,
+  GEMINI_CLIENT_ID_KEYS,
+  GEMINI_CLIENT_SECRET_KEYS,
+  GEMINI_OAUTH_AUTH_URL,
+  GEMINI_OAUTH_SCOPES,
+  GEMINI_OAUTH_TOKEN_URL,
+  OPENAI_DEFAULT_REDIRECT,
+  OPENAI_DEFAULT_SCOPES,
+  OPENAI_OAUTH_AUTH_URL,
+  OPENAI_OAUTH_CLIENT_ID_KEYS,
+  OPENAI_OAUTH_CLIENT_SECRET_KEYS,
+  OPENAI_OAUTH_TOKEN_URL,
+  resolveEnvValue,
+} from '../lib/provider-auth.js';
+import { DEFAULT_GOOGLE_SCOPE_KEYS, normalizeGoogleScopes } from '../lib/google-scopes.js';
 import {
   colors,
   sleep,
@@ -52,17 +79,17 @@ const PROVIDER_AUTH_HELP: Record<string, {
 }> = {
   anthropic: {
     apiKeyUrl: 'https://platform.claude.com/',
-    oauthNote: 'Anthropic does not issue OAuth tokens for the API.',
+    oauthNote: 'For Claude Code setup-token, run: vena config claude-setup-token',
   },
   openai: {
     apiKeyUrl: 'https://platform.openai.com/api-keys',
-    oauthNote: 'OpenAI does not issue OAuth tokens for the API.',
+    oauthNote: 'For Codex (ChatGPT) OAuth, run: vena config openai-codex-auth',
   },
   gemini: {
     apiKeyUrl: 'https://aistudio.google.com/app/apikey',
     oauthUrl: 'https://console.cloud.google.com/apis/credentials',
     oauthGuideUrl: 'https://ai.google.dev/palm_docs/oauth_quickstart',
-    oauthNote: 'Vena does not generate Gemini OAuth tokens; paste an existing access token. For Workspace tools, run: vena config google-auth',
+    oauthNote: 'Use `vena config gemini-auth` for Gemini OAuth or paste an existing token. For Workspace tools, run: vena config google-auth',
   },
 };
 
@@ -87,6 +114,543 @@ function printAuthHelp(providerKey: string, authType: 'api_key' | 'oauth_token')
     }
     console.log();
   }
+}
+
+function normalizeString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+type OAuthFlowResult = {
+  auth: AuthConfig;
+  extras?: Record<string, unknown>;
+};
+
+async function promptToken(message: string): Promise<string> {
+  const tokenResponse = await prompts({
+    type: 'password',
+    name: 'token',
+    message: colors.primary('▸') + ` ${message}`,
+  }, {
+    onCancel: () => {
+      console.log();
+      console.log(colors.secondary('  Setup cancelled.'));
+      console.log();
+      process.exit(0);
+    },
+  });
+  return (tokenResponse.token as string) ?? '';
+}
+
+async function promptText(message: string): Promise<string> {
+  const response = await prompts({
+    type: 'text',
+    name: 'value',
+    message: colors.primary('▸') + ` ${message}`,
+  }, {
+    onCancel: () => {
+      console.log();
+      console.log(colors.secondary('  Setup cancelled.'));
+      console.log();
+      process.exit(0);
+    },
+  });
+  return (response.value as string) ?? '';
+}
+
+async function runGeminiOAuthFlow(): Promise<OAuthFlowResult | null> {
+  let clientId = resolveEnvValue(GEMINI_CLIENT_ID_KEYS);
+  let clientSecret = resolveEnvValue(GEMINI_CLIENT_SECRET_KEYS);
+
+  if (!clientId) {
+    const extracted = extractGeminiCliCredentials();
+    if (extracted) {
+      clientId = extracted.clientId;
+      if (!clientSecret && extracted.clientSecret) {
+        clientSecret = extracted.clientSecret;
+      }
+    }
+  }
+
+  if (!clientId) {
+    console.log();
+    console.log(chalk.bold('  Gemini OAuth setup'));
+    console.log(chalk.dim('  No Gemini CLI credentials found.'));
+    console.log(chalk.dim('  If you have Gemini CLI installed, this will auto-detect.'));
+    console.log();
+
+    const creds = await prompts([
+      {
+        type: 'text',
+        name: 'clientId',
+        message: 'Client ID',
+        validate: (value: string) => (normalizeString(value) ? true : 'Required'),
+      },
+      {
+        type: 'password',
+        name: 'clientSecret',
+        message: 'Client Secret (optional)',
+      },
+    ], {
+      onCancel: () => {
+        console.log();
+        console.log(colors.secondary('  Setup cancelled.'));
+        console.log();
+        process.exit(0);
+      },
+    });
+
+    clientId = normalizeString(creds.clientId) ?? clientId;
+    clientSecret = normalizeString(creds.clientSecret) ?? clientSecret;
+    if (!clientId) {
+      console.log(chalk.red('\n  Client ID is required.\n'));
+      return null;
+    }
+  }
+
+  const redirectUri = 'http://localhost:8085/oauth2callback';
+  const { verifier, challenge } = generatePkce();
+  const state = verifier;
+
+  const authParams = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: GEMINI_OAUTH_SCOPES.join(' '),
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state,
+    access_type: 'offline',
+    prompt: 'consent',
+  });
+  const authUrl = `${GEMINI_OAUTH_AUTH_URL}?${authParams.toString()}`;
+
+  let rawInput = '';
+  const manualFlow = shouldUseManualOAuthFlow() || !canUseLocalCallback(redirectUri);
+
+  if (!manualFlow) {
+    console.log(colors.dim('  Opening your browser to authorize...'));
+    try {
+      await openBrowser(authUrl);
+    } catch {
+      console.log(colors.dim('  Unable to open browser automatically.'));
+    }
+    try {
+      const callback = await waitForOAuthCallback({
+        redirectUri,
+        expectedState: state,
+        timeoutMs: 5 * 60 * 1000,
+      });
+      rawInput = callback.code;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(chalk.yellow(`\n  OAuth callback failed: ${message}\n`));
+    }
+  }
+
+  if (!rawInput) {
+    console.log(colors.dim('  Open this URL in your browser to authorize:'));
+    console.log(`  ${authUrl}`);
+    console.log();
+    console.log(colors.dim('  Paste the full redirect URL (or just the code).'));
+    console.log();
+    rawInput = await promptText('Authorization Code or Redirect URL');
+  }
+
+  const parsed = extractOAuthCodeAndState(rawInput, state);
+  if ('error' in parsed) {
+    console.log(chalk.red(`\n  ${parsed.error}\n`));
+    return null;
+  }
+  if (parsed.state !== state) {
+    console.log(chalk.red('\n  OAuth state mismatch. Please try again.\n'));
+    return null;
+  }
+
+  const tokenBody = new URLSearchParams({
+    client_id: clientId,
+    code: parsed.code,
+    grant_type: 'authorization_code',
+    redirect_uri: redirectUri,
+    code_verifier: verifier,
+  });
+  if (clientSecret) {
+    tokenBody.set('client_secret', clientSecret);
+  }
+
+  const tokenResponse = await fetch(GEMINI_OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: tokenBody.toString(),
+  });
+
+  if (!tokenResponse.ok) {
+    const text = await tokenResponse.text();
+    console.log(chalk.red(`\n  Token exchange failed: ${tokenResponse.status} ${text}\n`));
+    return null;
+  }
+
+  const tokenData = await tokenResponse.json() as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+
+  if (!tokenData.refresh_token) {
+    console.log(chalk.red('\n  No refresh token received. Try again and ensure consent is granted.\n'));
+    return null;
+  }
+
+  const expiresAt = tokenData.expires_in
+    ? Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000
+    : undefined;
+
+  let project =
+    normalizeString(process.env['GOOGLE_CLOUD_PROJECT']) ??
+    normalizeString(process.env['GOOGLE_CLOUD_PROJECT_ID']);
+  let location =
+    normalizeString(process.env['GOOGLE_CLOUD_REGION']) ??
+    normalizeString(process.env['GOOGLE_CLOUD_LOCATION']);
+
+  if (!project) {
+    const projectResponse = await prompts({
+      type: 'text',
+      name: 'project',
+      message: 'Google Cloud project ID (optional)',
+    }, {
+      onCancel: () => {
+        console.log();
+        console.log(colors.secondary('  Setup cancelled.'));
+        console.log();
+        process.exit(0);
+      },
+    });
+    project = normalizeString(projectResponse.project);
+  }
+
+  if (!location) {
+    const locationResponse = await prompts({
+      type: 'text',
+      name: 'location',
+      message: 'Vertex AI location (e.g. us-central1)',
+      initial: 'us-central1',
+    }, {
+      onCancel: () => {
+        console.log();
+        console.log(colors.secondary('  Setup cancelled.'));
+        console.log();
+        process.exit(0);
+      },
+    });
+    location = normalizeString(locationResponse.location);
+  }
+
+  const hasVertexConfig = Boolean(project && location);
+  if (!hasVertexConfig) {
+    console.log(chalk.yellow('  Missing project/location. Set providers.gemini.project and providers.gemini.location later.'));
+  }
+
+  return {
+    auth: {
+      type: 'oauth_token',
+      oauthToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      tokenUrl: GEMINI_OAUTH_TOKEN_URL,
+      clientId,
+      ...(clientSecret ? { clientSecret } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    },
+    extras: {
+      vertexai: hasVertexConfig,
+      ...(project ? { project } : {}),
+      ...(location ? { location } : {}),
+    },
+  };
+}
+
+async function runOpenAICodexOAuthFlow(): Promise<OAuthFlowResult | null> {
+  let clientId = resolveEnvValue(OPENAI_OAUTH_CLIENT_ID_KEYS);
+  let clientSecret = resolveEnvValue(OPENAI_OAUTH_CLIENT_SECRET_KEYS);
+
+  if (!clientId) {
+    const extracted = extractOpenAiCodexClient();
+    if (extracted) {
+      clientId = extracted.clientId;
+    }
+  }
+
+  if (!clientId) {
+    console.log();
+    console.log(chalk.bold('  OpenAI Codex OAuth setup'));
+    console.log(chalk.dim('  No Codex CLI client ID detected.'));
+    console.log(chalk.dim('  Set OPENAI_CODEX_OAUTH_CLIENT_ID or enter it below.'));
+    console.log();
+
+    const creds = await prompts([
+      {
+        type: 'text',
+        name: 'clientId',
+        message: 'Client ID',
+        validate: (value: string) => (normalizeString(value) ? true : 'Required'),
+      },
+      {
+        type: 'password',
+        name: 'clientSecret',
+        message: 'Client Secret (optional)',
+      },
+    ], {
+      onCancel: () => {
+        console.log();
+        console.log(colors.secondary('  Setup cancelled.'));
+        console.log();
+        process.exit(0);
+      },
+    });
+
+    clientId = normalizeString(creds.clientId) ?? clientId;
+    clientSecret = normalizeString(creds.clientSecret) ?? clientSecret;
+    if (!clientId) {
+      console.log(chalk.red('\n  Client ID is required.\n'));
+      return null;
+    }
+  }
+
+  const redirectUri = OPENAI_DEFAULT_REDIRECT;
+  const { verifier, challenge } = generatePkce();
+  const state = verifier;
+
+  const authParams = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: OPENAI_DEFAULT_SCOPES.join(' '),
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state,
+  });
+  const authUrl = `${OPENAI_OAUTH_AUTH_URL}?${authParams.toString()}`;
+
+  let rawInput = '';
+  const manualFlow = shouldUseManualOAuthFlow() || !canUseLocalCallback(redirectUri);
+
+  if (!manualFlow) {
+    console.log(colors.dim('  Opening your browser to authorize...'));
+    try {
+      await openBrowser(authUrl);
+    } catch {
+      console.log(colors.dim('  Unable to open browser automatically.'));
+    }
+    try {
+      const callback = await waitForOAuthCallback({
+        redirectUri,
+        expectedState: state,
+        timeoutMs: 5 * 60 * 1000,
+      });
+      rawInput = callback.code;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(chalk.yellow(`\n  OAuth callback failed: ${message}\n`));
+    }
+  }
+
+  if (!rawInput) {
+    console.log(colors.dim('  Open this URL in your browser to authorize:'));
+    console.log(`  ${authUrl}`);
+    console.log();
+    console.log(colors.dim('  Paste the full redirect URL (or just the code).'));
+    console.log();
+    rawInput = await promptText('Authorization Code or Redirect URL');
+  }
+
+  const parsed = extractOAuthCodeAndState(rawInput, state);
+  if ('error' in parsed) {
+    console.log(chalk.red(`\n  ${parsed.error}\n`));
+    return null;
+  }
+  if (parsed.state !== state) {
+    console.log(chalk.red('\n  OAuth state mismatch. Please try again.\n'));
+    return null;
+  }
+
+  const tokenBody = new URLSearchParams({
+    client_id: clientId,
+    code: parsed.code,
+    grant_type: 'authorization_code',
+    redirect_uri: redirectUri,
+    code_verifier: verifier,
+  });
+  if (clientSecret) {
+    tokenBody.set('client_secret', clientSecret);
+  }
+
+  const tokenResponse = await fetch(OPENAI_OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: tokenBody.toString(),
+  });
+
+  if (!tokenResponse.ok) {
+    const text = await tokenResponse.text();
+    console.log(chalk.red(`\n  Token exchange failed: ${tokenResponse.status} ${text}\n`));
+    return null;
+  }
+
+  const tokenData = await tokenResponse.json() as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+
+  if (!tokenData.access_token) {
+    console.log(chalk.red('\n  No access token received.\n'));
+    return null;
+  }
+
+  const expiresAt = tokenData.expires_in
+    ? Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000
+    : undefined;
+
+  return {
+    auth: {
+      type: 'oauth_token',
+      oauthToken: tokenData.access_token,
+      ...(tokenData.refresh_token ? { refreshToken: tokenData.refresh_token } : {}),
+      tokenUrl: OPENAI_OAUTH_TOKEN_URL,
+      clientId,
+      ...(clientSecret ? { clientSecret } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    },
+  };
+}
+
+async function runClaudeSetupTokenFlow(): Promise<OAuthFlowResult | null> {
+  console.log();
+  console.log(chalk.bold('  Claude Code setup-token'));
+  console.log(chalk.dim('  Run `claude setup-token` in another terminal, then paste it here.'));
+  console.log();
+
+  const token = normalizeString(await promptToken('Paste setup-token'));
+  if (!token) {
+    console.log(chalk.red('\n  Setup-token is required.\n'));
+    return null;
+  }
+
+  return {
+    auth: {
+      type: 'oauth_token',
+      oauthToken: token,
+    },
+  };
+}
+
+async function runGoogleWorkspaceOAuthFlow(): Promise<Record<string, unknown> | null> {
+  console.log();
+  console.log(chalk.bold('  Google Workspace OAuth'));
+  console.log(chalk.dim('  Authorize Gmail, Docs, Sheets, Calendar, Drive.'));
+  console.log();
+
+  const proceed = await prompts({
+    type: 'confirm',
+    name: 'confirm',
+    message: 'Authorize Google Workspace now?',
+    initial: true,
+  }, {
+    onCancel: () => {
+      console.log();
+      console.log(colors.secondary('  Setup cancelled.'));
+      console.log();
+      process.exit(0);
+    },
+  });
+  if (!proceed.confirm) {
+    console.log(colors.dim('  Skipped — you can run `vena config google-auth` later.'));
+    return null;
+  }
+
+  const creds = await prompts([
+    {
+      type: 'text',
+      name: 'clientId',
+      message: 'Google OAuth Client ID',
+      validate: (value: string) => (normalizeString(value) ? true : 'Required'),
+    },
+    {
+      type: 'password',
+      name: 'clientSecret',
+      message: 'Google OAuth Client Secret',
+      validate: (value: string) => (normalizeString(value) ? true : 'Required'),
+    },
+  ], {
+    onCancel: () => {
+      console.log();
+      console.log(colors.secondary('  Setup cancelled.'));
+      console.log();
+      process.exit(0);
+    },
+  });
+
+  const clientId = normalizeString(creds.clientId);
+  const clientSecret = normalizeString(creds.clientSecret);
+  if (!clientId || !clientSecret) {
+    console.log(chalk.red('\n  Client ID and secret are required.\n'));
+    return null;
+  }
+
+  const { scopeKeys, oauthScopes } = normalizeGoogleScopes([...DEFAULT_GOOGLE_SCOPE_KEYS]);
+  const redirectUri = 'http://localhost:3000/oauth2callback';
+  const auth = new GoogleAuth({
+    clientId,
+    clientSecret,
+    redirectUri,
+  });
+  const authUrl = auth.getAuthUrl(oauthScopes);
+
+  let rawInput = '';
+  const manualFlow = shouldUseManualOAuthFlow() || !canUseLocalCallback(redirectUri);
+
+  if (!manualFlow) {
+    console.log(colors.dim('  Opening your browser to authorize...'));
+    try {
+      await openBrowser(authUrl);
+    } catch {
+      console.log(colors.dim('  Unable to open browser automatically.'));
+    }
+    try {
+      const callback = await waitForOAuthCallback({
+        redirectUri,
+        timeoutMs: 5 * 60 * 1000,
+      });
+      rawInput = callback.code;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(chalk.yellow(`\n  OAuth callback failed: ${message}\n`));
+    }
+  }
+
+  if (!rawInput) {
+    console.log(colors.dim('  Open this URL in your browser to authorize:'));
+    console.log(`  ${authUrl}`);
+    console.log();
+    console.log(colors.dim('  Paste the full redirect URL (or just the code).'));
+    console.log();
+    rawInput = await promptText('Authorization Code or Redirect URL');
+  }
+
+  const code = extractOAuthCode(rawInput);
+  if (!code) {
+    console.log(chalk.red('\n  No authorization code provided.\n'));
+    return null;
+  }
+
+  await auth.exchangeCode(code);
+  console.log(chalk.green('\n  ✓ Google Workspace tokens saved to ~/.vena/google-tokens.json\n'));
+
+  return {
+    clientId,
+    clientSecret,
+    scopes: scopeKeys,
+  };
 }
 
 // ── Welcome Animation ─────────────────────────────────────────────────
@@ -354,19 +918,34 @@ export const onboardCommand = new Command('onboard')
     // ── Step 3: Authentication ──────────────────────────────────────
     let apiKey = '';
     let authType: 'api_key' | 'oauth_token' = 'api_key';
-    let oauthToken = '';
+    let providerAuth: AuthConfig | null = null;
+    let providerExtras: Record<string, unknown> = {};
 
     if (providerKey !== 'ollama') {
       printStepHeader(3, totalSteps, 'Authentication', `Choose how to authenticate with ${provider}.`);
 
+      type AuthMethod = 'api_key' | 'oauth_login' | 'oauth_token';
+      const choices: Array<{ title: string; value: AuthMethod }> = [
+        { title: `${colors.primary('●')} API Key       ${colors.dim('─ Standard API key from provider dashboard')}`, value: 'api_key' },
+      ];
+
+      if (providerKey === 'anthropic') {
+        choices.push({ title: `${colors.primary('●')} Setup Token  ${colors.dim('─ Claude Code setup-token')}`, value: 'oauth_login' });
+      } else if (providerKey === 'openai') {
+        choices.push({ title: `${colors.primary('●')} Codex OAuth  ${colors.dim('─ ChatGPT sign-in (recommended)')}`, value: 'oauth_login' });
+        choices.push({ title: `${colors.primary('●')} Paste Token  ${colors.dim('─ OAuth/Bearer token (Advanced)')}`, value: 'oauth_token' });
+      } else if (providerKey === 'gemini') {
+        choices.push({ title: `${colors.primary('●')} Gemini OAuth ${colors.dim('─ Gemini CLI-style OAuth')}`, value: 'oauth_login' });
+        choices.push({ title: `${colors.primary('●')} Paste Token  ${colors.dim('─ OAuth/Bearer token (Advanced)')}`, value: 'oauth_token' });
+      } else {
+        choices.push({ title: `${colors.primary('●')} OAuth/Bearer  ${colors.dim('─ Paste an access token (Advanced)')}`, value: 'oauth_token' });
+      }
+
       const authChoice = await prompts({
         type: 'select',
-        name: 'authType',
+        name: 'authMethod',
         message: colors.primary('▸') + ' Auth Method',
-        choices: [
-          { title: `${colors.primary('●')} API Key       ${colors.dim('─ Standard API key from provider dashboard')}`, value: 'api_key' },
-          { title: `${colors.primary('●')} OAuth/Bearer  ${colors.dim('─ Paste an access token (Advanced)')}`, value: 'oauth_token' },
-        ],
+        choices,
       }, {
         onCancel: () => {
           console.log();
@@ -376,10 +955,11 @@ export const onboardCommand = new Command('onboard')
         },
       });
 
-      authType = authChoice.authType as 'api_key' | 'oauth_token';
+      const authMethod = authChoice.authMethod as AuthMethod;
+      authType = authMethod === 'api_key' ? 'api_key' : 'oauth_token';
       printAuthHelp(providerKey, authType);
 
-      if (authType === 'api_key') {
+      if (authMethod === 'api_key') {
         console.log();
         const keyResponse = await prompts({
           type: 'password',
@@ -397,26 +977,35 @@ export const onboardCommand = new Command('onboard')
         if (apiKey) {
           console.log(`  ${colors.success('✓')} ${colors.dim('API key saved')}`);
         }
-      } else {
+      } else if (authMethod === 'oauth_token') {
         console.log();
         console.log(`  ${colors.dim('Paste your OAuth2 access token or bearer token.')}`);
         console.log();
-        const tokenResponse = await prompts({
-          type: 'password',
-          name: 'token',
-          message: colors.primary('▸') + ' OAuth Token',
-        }, {
-          onCancel: () => {
-            console.log();
-            console.log(colors.secondary('  Setup cancelled.'));
-            console.log();
-            process.exit(0);
-          },
-        });
-        oauthToken = tokenResponse.token as string;
-        if (oauthToken) {
-          console.log(`  ${colors.success('✓')} ${colors.dim('OAuth token saved')}`);
+        const token = await promptToken('OAuth Token');
+        if (!token) {
+          console.log(colors.secondary('\n  OAuth token is required.\n'));
+          process.exit(0);
         }
+        providerAuth = { type: 'oauth_token', oauthToken: token };
+        console.log(`  ${colors.success('✓')} ${colors.dim('OAuth token saved')}`);
+      } else {
+        let result: OAuthFlowResult | null = null;
+        if (providerKey === 'anthropic') {
+          result = await runClaudeSetupTokenFlow();
+        } else if (providerKey === 'openai') {
+          result = await runOpenAICodexOAuthFlow();
+        } else if (providerKey === 'gemini') {
+          result = await runGeminiOAuthFlow();
+        }
+
+        if (!result) {
+          console.log(colors.secondary('\n  OAuth setup failed. Please try again.\n'));
+          process.exit(0);
+        }
+
+        providerAuth = result.auth;
+        providerExtras = result.extras ?? {};
+        console.log(`  ${colors.success('✓')} ${colors.dim('OAuth setup complete')}`);
       }
     } else {
       printStepHeader(3, totalSteps, 'Local Provider Selected', 'No API key needed for Ollama. Make sure it\'s running at localhost:11434.');
@@ -604,6 +1193,11 @@ export const onboardCommand = new Command('onboard')
 
     const features = (featureResponse.features as string[]) ?? [];
 
+    let googleConfig: Record<string, unknown> | null = null;
+    if (features.includes('google')) {
+      googleConfig = await runGoogleWorkspaceOAuthFlow();
+    }
+
     // ── Build Configuration ───────────────────────────────────────────
     console.log();
     console.log(`  ${progressBar(totalSteps, totalSteps, 40)}`);
@@ -619,15 +1213,20 @@ export const onboardCommand = new Command('onboard')
         return { ollama: { baseUrl: 'http://localhost:11434', model: selectedModel } };
       }
       if (authType === 'oauth_token') {
+        const auth = providerAuth ?? undefined;
+        if (!auth) {
+          throw new Error('OAuth selected but no credentials were captured.');
+        }
         return {
           [providerKey]: {
             model: selectedModel,
-            auth: { type: 'oauth_token' as const, oauthToken },
+            auth,
+            ...providerExtras,
           },
         };
       }
       return {
-        [providerKey]: { apiKey, model: selectedModel },
+        [providerKey]: { apiKey, model: selectedModel, ...providerExtras },
       };
     };
 
@@ -704,6 +1303,7 @@ export const onboardCommand = new Command('onboard')
         autoVoiceReply: enableVoice,
       },
       skills: { dirs: [], managed: '~/.vena/skills' },
+      ...(googleConfig ? { google: googleConfig } : {}),
       ...(userName ? {
         userProfile: {
           name: userName,

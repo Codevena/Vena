@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { OAuth2Client, UserRefreshClient } from 'google-auth-library';
 import type {
   ChatParams,
   Message,
@@ -22,6 +23,10 @@ export interface GeminiProviderOptions {
   apiKey?: string;
   model?: string;
   auth?: AuthConfig;
+  vertexai?: boolean;
+  project?: string;
+  location?: string;
+  apiVersion?: string;
 }
 
 export class GeminiProvider implements LLMProvider {
@@ -37,16 +42,74 @@ export class GeminiProvider implements LLMProvider {
   constructor(options: GeminiProviderOptions) {
     this.options = options;
     this.model = options.model ?? 'gemini-2.0-flash';
-    if (options.apiKey && !options.auth) {
+    if (options.apiKey && !options.auth && !options.vertexai) {
       this.client = new GoogleGenAI({ apiKey: options.apiKey });
       this.initialized = true;
     }
   }
 
+  private buildGoogleAuthClient(auth: AuthConfig): OAuth2Client {
+    if (auth.refreshToken) {
+      const client = new UserRefreshClient({
+        clientId: auth.clientId,
+        clientSecret: auth.clientSecret,
+        refreshToken: auth.refreshToken,
+      });
+      if (auth.oauthToken) {
+        client.setCredentials({
+          access_token: auth.oauthToken,
+          refresh_token: auth.refreshToken,
+          expiry_date: auth.expiresAt ?? undefined,
+        });
+      }
+      return client;
+    }
+
+    const client = new OAuth2Client({
+      clientId: auth.clientId,
+      clientSecret: auth.clientSecret,
+    });
+    if (auth.oauthToken) {
+      client.setCredentials({
+        access_token: auth.oauthToken,
+        expiry_date: auth.expiresAt ?? undefined,
+      });
+    }
+    return client;
+  }
+
   private async ensureClient(): Promise<GoogleGenAI> {
     if (this.initialized) return this.client;
+
+    const auth = this.options.auth;
+    if (auth && (auth.type === 'oauth_token' || auth.type === 'bearer_token') && (this.options.vertexai || this.options.project || this.options.location)) {
+      const project =
+        this.options.project ??
+        process.env['GOOGLE_CLOUD_PROJECT'] ??
+        process.env['GOOGLE_CLOUD_PROJECT_ID'];
+      const location =
+        this.options.location ??
+        process.env['GOOGLE_CLOUD_REGION'] ??
+        process.env['GOOGLE_CLOUD_LOCATION'];
+
+      if (!project || !location) {
+        throw new ProviderError('Gemini OAuth requires project and location for Vertex AI', 'gemini');
+      }
+
+      const authClient = this.buildGoogleAuthClient(auth);
+      this.client = new GoogleGenAI({
+        vertexai: true,
+        project,
+        location,
+        apiVersion: this.options.apiVersion,
+        googleAuthOptions: { authClient },
+      });
+      this.initialized = true;
+      return this.client;
+    }
+
     const token = await resolveAuth(this.options.auth, this.options.apiKey, 'gemini');
-    this.client = new GoogleGenAI({ apiKey: token });
+    this.client = new GoogleGenAI({ apiKey: token, apiVersion: this.options.apiVersion });
     this.initialized = true;
     return this.client;
   }

@@ -21,6 +21,13 @@ const providerConfigSchema = z.object({
   auth: authConfigSchema.optional(),
 });
 
+const geminiConfigSchema = providerConfigSchema.extend({
+  vertexai: z.boolean().optional(),
+  project: z.string().optional(),
+  location: z.string().optional(),
+  apiVersion: z.string().optional(),
+});
+
 const agentConfigSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -39,7 +46,7 @@ export const venaConfigSchema = z.object({
     default: z.string().default('anthropic'),
     anthropic: providerConfigSchema.optional(),
     openai: providerConfigSchema.optional(),
-    gemini: providerConfigSchema.optional(),
+    gemini: geminiConfigSchema.optional(),
     ollama: z.object({
       baseUrl: z.string().default('http://localhost:11434'),
       model: z.string().default('llama3'),
