@@ -1268,6 +1268,7 @@ export const onboardCommand = new Command('onboard')
         browser: { enabled: enableComputer, headless: false },
         keyboard: { enabled: false },
         screenshot: { enabled: enableComputer },
+        docker: { enabled: false, image: 'node:22-slim', memoryLimit: '512m', cpuLimit: '1.0', network: 'none', readOnlyRoot: true },
       },
       voice: {
         tts: { provider: 'elevenlabs', defaultVoice: 'adam', model: 'eleven_multilingual_v2' },

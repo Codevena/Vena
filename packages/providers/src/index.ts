@@ -4,5 +4,7 @@ export { OpenAIProvider, type OpenAIProviderOptions } from './openai.js';
 export { GeminiProvider, type GeminiProviderOptions } from './gemini.js';
 export { GeminiCliProvider, type GeminiCliProviderOptions } from './gemini-cli.js';
 export { OllamaProvider } from './ollama.js';
+export { GroqProvider, type GroqProviderOptions } from './groq.js';
+export { OpenRouterProvider, type OpenRouterProviderOptions } from './openrouter.js';
 export { collectStream, streamToText } from './streaming.js';
 export { resolveAuth, authHeaders, type TokenState } from './auth.js';

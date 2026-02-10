@@ -24,9 +24,9 @@ export interface OpenAIProviderOptions {
 }
 
 export class OpenAIProvider implements LLMProvider {
-  readonly name = 'openai';
-  readonly supportsTools = true;
-  readonly maxContextWindow = 128_000;
+  readonly name: string = 'openai';
+  readonly supportsTools: boolean = true;
+  readonly maxContextWindow: number = 128_000;
 
   private client!: OpenAI;
   private model: string;

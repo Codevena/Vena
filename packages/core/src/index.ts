@@ -7,7 +7,8 @@ export { ToolExecutor } from './agent/tool-executor.js';
 export { SessionManager } from './agent/session.js';
 
 export { ToolRegistry } from './tools/tool-registry.js';
-export { BashTool } from './tools/bash.js';
+export { BashTool, type BashToolOptions } from './tools/bash.js';
+export { runInDocker, checkDockerAvailable, type DockerSandboxConfig } from './tools/docker-sandbox.js';
 export { ReadTool } from './tools/read.js';
 export { WriteTool } from './tools/write.js';
 export { EditTool } from './tools/edit.js';

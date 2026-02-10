@@ -160,6 +160,17 @@ export interface OutboundMessage {
   parseMode?: 'markdown' | 'html';
 }
 
+export interface SkillRequirements {
+  /** Required binaries (all must exist) */
+  bins?: string[];
+  /** At least one of these binaries must exist */
+  anyBins?: string[];
+  /** Required environment variables */
+  env?: string[];
+  /** Required config paths (dot notation) */
+  config?: string[];
+}
+
 export interface Skill {
   name: string;
   description: string;
@@ -170,6 +181,16 @@ export interface Skill {
   enabled: boolean;
   source: 'bundled' | 'managed' | 'workspace';
   path: string;
+  /** Slash command name for direct invocation (e.g., "/summarize") */
+  command?: string;
+  /** Allow users to invoke this skill directly */
+  userInvocable?: boolean;
+  /** Prevent the model from auto-invoking this skill */
+  disableModelInvocation?: boolean;
+  /** Platform filter (e.g., ["darwin", "linux"]) */
+  os?: string[];
+  /** Eligibility requirements */
+  requires?: SkillRequirements;
 }
 
 export interface AgentProfile {

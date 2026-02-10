@@ -1,7 +1,52 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 import { type Skill, SkillError } from '@vena/shared';
 import { SkillParser } from './parser.js';
+
+/**
+ * Check if a skill is eligible to run on the current platform.
+ * Returns true if all requirements are met.
+ */
+export function checkSkillEligibility(skill: Skill): boolean {
+  // OS filter
+  if (skill.os && skill.os.length > 0) {
+    if (!skill.os.includes(process.platform)) return false;
+  }
+
+  const req = skill.requires;
+  if (!req) return true;
+
+  // Required binaries (all must exist)
+  if (req.bins && req.bins.length > 0) {
+    for (const bin of req.bins) {
+      if (!binExists(bin)) return false;
+    }
+  }
+
+  // At least one binary must exist
+  if (req.anyBins && req.anyBins.length > 0) {
+    if (!req.anyBins.some(binExists)) return false;
+  }
+
+  // Required environment variables
+  if (req.env && req.env.length > 0) {
+    for (const key of req.env) {
+      if (!process.env[key]) return false;
+    }
+  }
+
+  return true;
+}
+
+function binExists(name: string): boolean {
+  try {
+    execSync(`command -v ${name}`, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export class SkillLoader {
   private readonly parser = new SkillParser();
@@ -47,7 +92,8 @@ export class SkillLoader {
       skillMap.set(skill.name, skill);
     }
 
-    this.skills = Array.from(skillMap.values());
+    // Filter out ineligible skills (wrong OS, missing binaries/env)
+    this.skills = Array.from(skillMap.values()).filter(checkSkillEligibility);
     this.loaded = true;
     return this.skills;
   }

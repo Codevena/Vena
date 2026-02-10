@@ -45,4 +45,22 @@ export class SkillRegistry {
       skill.triggers.some((t) => lower.includes(t.toLowerCase())),
     );
   }
+
+  /** Find a skill by its slash command (e.g., "summarize" matches command: "summarize") */
+  matchCommand(command: string): Skill | undefined {
+    const normalized = command.toLowerCase().replace(/^\//, '');
+    return this.getEnabled().find(
+      (s) => s.command?.toLowerCase() === normalized,
+    );
+  }
+
+  /** Get all skills that are user-invocable via slash commands */
+  getUserInvocable(): Skill[] {
+    return this.getEnabled().filter((s) => s.userInvocable && s.command);
+  }
+
+  /** Get skills eligible for model-driven invocation (excludes disableModelInvocation) */
+  getModelInvocable(): Skill[] {
+    return this.getEnabled().filter((s) => !s.disableModelInvocation);
+  }
 }

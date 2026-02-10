@@ -53,6 +53,8 @@ export const venaConfigSchema = z.object({
       baseUrl: z.string().default('http://localhost:11434'),
       model: z.string().default('llama3'),
     }).optional(),
+    groq: providerConfigSchema.optional(),
+    openrouter: providerConfigSchema.optional(),
   }),
 
   channels: z.object({
@@ -144,6 +146,14 @@ export const venaConfigSchema = z.object({
     }).default({}),
     screenshot: z.object({
       enabled: z.boolean().default(true),
+    }).default({}),
+    docker: z.object({
+      enabled: z.boolean().default(false),
+      image: z.string().default('node:22-slim'),
+      memoryLimit: z.string().default('512m'),
+      cpuLimit: z.string().default('1.0'),
+      network: z.enum(['none', 'host', 'bridge']).default('none'),
+      readOnlyRoot: z.boolean().default(true),
     }).default({}),
   }).default({}),
 

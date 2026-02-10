@@ -1,11 +1,16 @@
 import matter from 'gray-matter';
-import { type Skill, SkillError } from '@vena/shared';
+import { type Skill, type SkillRequirements, SkillError } from '@vena/shared';
 
 export interface SkillFrontmatter {
   name: string;
   description: string;
   version: string;
   triggers: string[];
+  command?: string;
+  userInvocable?: boolean;
+  disableModelInvocation?: boolean;
+  os?: string[];
+  requires?: SkillRequirements;
 }
 
 export class SkillParser {
@@ -52,6 +57,11 @@ export class SkillParser {
         }
       }
 
+      // Parse optional command dispatch field
+      const command = typeof frontmatter.command === 'string' && frontmatter.command.trim()
+        ? frontmatter.command.trim().replace(/^\//, '')  // strip leading /
+        : undefined;
+
       return {
         name: frontmatter.name,
         description: frontmatter.description,
@@ -61,6 +71,11 @@ export class SkillParser {
         enabled: true,
         source,
         path: filePath,
+        command,
+        userInvocable: frontmatter.userInvocable === true ? true : undefined,
+        disableModelInvocation: frontmatter.disableModelInvocation === true ? true : undefined,
+        os: Array.isArray(frontmatter.os) ? frontmatter.os : undefined,
+        requires: frontmatter.requires ?? undefined,
       };
     } catch (error) {
       if (error instanceof SkillError) {

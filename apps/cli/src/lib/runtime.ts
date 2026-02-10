@@ -15,6 +15,8 @@ import {
   GeminiProvider,
   GeminiCliProvider,
   OllamaProvider,
+  GroqProvider,
+  OpenRouterProvider,
 } from '@vena/providers';
 
 // ── Paths ────────────────────────────────────────────────────────────
@@ -184,7 +186,35 @@ export function createProvider(
       };
     }
 
+    case 'groq': {
+      const cfg = config.providers.groq;
+      const apiKey = profileAuth?.apiKey ?? cfg?.apiKey;
+      if (!apiKey) {
+        throw new Error('Groq not configured. Set providers.groq.apiKey in ~/.vena/vena.json');
+      }
+      const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'llama-3.3-70b-versatile';
+      return {
+        provider: new GroqProvider({ apiKey, model }),
+        model,
+        providerName,
+      };
+    }
+
+    case 'openrouter': {
+      const cfg = config.providers.openrouter;
+      const apiKey = profileAuth?.apiKey ?? cfg?.apiKey;
+      if (!apiKey) {
+        throw new Error('OpenRouter not configured. Set providers.openrouter.apiKey in ~/.vena/vena.json');
+      }
+      const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'anthropic/claude-sonnet-4';
+      return {
+        provider: new OpenRouterProvider({ apiKey, model }),
+        model,
+        providerName,
+      };
+    }
+
     default:
-      throw new Error(`Unknown provider "${providerName}". Supported: anthropic, openai, gemini, ollama`);
+      throw new Error(`Unknown provider "${providerName}". Supported: anthropic, openai, gemini, ollama, groq, openrouter`);
   }
 }

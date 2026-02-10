@@ -1,5 +1,6 @@
 import type { Tool, ToolContext, ToolResult } from '@vena/shared';
 import { spawn } from 'node:child_process';
+import { runInDocker, type DockerSandboxConfig } from './docker-sandbox.js';
 
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1MB
 
@@ -8,6 +9,11 @@ const CATASTROPHIC_PATTERNS = [
   /mkfs\./,
   /dd\s+if=.*of=\/dev\//,
 ];
+
+export interface BashToolOptions {
+  envPassthrough?: string[];
+  docker?: DockerSandboxConfig;
+}
 
 export class BashTool implements Tool {
   name = 'bash';
@@ -23,9 +29,11 @@ export class BashTool implements Tool {
   };
 
   private envPassthrough?: string[];
+  private docker?: DockerSandboxConfig;
 
-  constructor(options?: { envPassthrough?: string[] }) {
+  constructor(options?: BashToolOptions) {
     this.envPassthrough = options?.envPassthrough;
+    this.docker = options?.docker;
   }
 
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -40,6 +48,23 @@ export class BashTool implements Tool {
           isError: true,
         };
       }
+    }
+
+    // Docker sandbox mode
+    if (this.docker) {
+      const result = await runInDocker(command, cwd, this.docker, {
+        timeout,
+        envPassthrough: this.envPassthrough,
+      });
+      let output = result.stdout + (result.stderr ? `\nSTDERR:\n${result.stderr}` : '');
+      if (result.truncated) {
+        output += '\n[output truncated — exceeded 1MB limit]';
+      }
+      return {
+        content: output || '(no output)',
+        isError: result.exitCode !== 0,
+        metadata: { exitCode: result.exitCode, sandboxed: true },
+      };
     }
 
     const env = this.buildEnv();

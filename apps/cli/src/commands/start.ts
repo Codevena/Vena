@@ -583,7 +583,17 @@ export const startCommand = new Command('start')
       }
 
       if (trustLevel === 'full' && config.computer.shell.enabled) {
-        tools.push(new BashTool({ envPassthrough: config.security.shell.envPassthrough }));
+        const dockerCfg = config.computer.docker;
+        tools.push(new BashTool({
+          envPassthrough: config.security.shell.envPassthrough,
+          docker: dockerCfg?.enabled ? {
+            image: dockerCfg.image,
+            memoryLimit: dockerCfg.memoryLimit,
+            cpuLimit: dockerCfg.cpuLimit,
+            network: dockerCfg.network,
+            readOnlyRoot: dockerCfg.readOnlyRoot,
+          } : undefined,
+        }));
       }
 
       if (trustLevel !== 'readonly' && config.computer.browser.enabled && browserAdapter) {
