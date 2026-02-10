@@ -30,6 +30,8 @@ import { VoiceMessagePipeline, TextToSpeech, SpeechToText } from '@vena/voice';
 import { AgentRegistry, MessageBus, MeshNetwork, IntentRouter } from '@vena/agents';
 import type { AgentDescriptor } from '@vena/agents';
 import { SkillLoader, SkillRegistry, SkillInjector } from '@vena/skills';
+import { triggerHook, createHookEvent, loadAndRegisterHooks } from '@vena/hooks';
+import { CronService } from '@vena/cron';
 import {
   loadConfig,
   createProvider,
@@ -198,6 +200,12 @@ async function showBootSequence(config: VenaConfig, results: BootResults): Promi
   if (results.googleServices.length > 0) {
     await spinnerLine(`Google Workspace (${results.googleServices.join(', ')})...`, 300);
   }
+  if (results.hookCount > 0) {
+    await spinnerLine(`${results.hookCount} hook(s) loaded...`, 200);
+  }
+  if (results.cronJobs > 0) {
+    await spinnerLine(`${results.cronJobs} cron job(s) scheduled...`, 200);
+  }
 
   for (const name of results.agentNames) {
     await spinnerLine(`Agent "${name}" active...`, 200);
@@ -226,6 +234,8 @@ interface BootResults {
   voiceEnabled: boolean;
   googleServices: string[];
   agentNames: string[];
+  hookCount: number;
+  cronJobs: number;
 }
 
 function showDashboard(config: VenaConfig, results: BootResults): void {
@@ -242,6 +252,8 @@ function showDashboard(config: VenaConfig, results: BootResults): void {
   if (results.voiceEnabled) features.push('Voice');
   if (results.googleServices.length > 0) features.push('Google');
   if (agentCount > 1) features.push('MeshNetwork');
+  if (results.hookCount > 0) features.push(`${results.hookCount} Hooks`);
+  if (results.cronJobs > 0) features.push(`${results.cronJobs} Cron`);
 
   const dashLines = [
     colors.secondary(chalk.bold('VENA AGENT PLATFORM')),
@@ -484,6 +496,66 @@ export const startCommand = new Command('start')
       }
     } catch (err) {
       log.warn({ error: err }, 'Failed to load skills (non-critical)');
+    }
+
+    // ── Load Hooks ─────────────────────────────────────────────────────
+    let hookCount = 0;
+    try {
+      const discovered = await loadAndRegisterHooks();
+      hookCount = discovered.length;
+      if (hookCount > 0) {
+        log.info({ count: hookCount }, 'Hooks loaded');
+      }
+    } catch (err) {
+      log.warn({ error: err }, 'Failed to load hooks (non-critical)');
+    }
+
+    // ── Cron Service ─────────────────────────────────────────────────
+    const cronService = new CronService({
+      callback: async (job) => {
+        log.info({ jobId: job.id, name: job.name }, 'Cron job executing');
+
+        if (job.payload.kind === 'systemEvent') {
+          await triggerHook(createHookEvent('agent', 'cron', `cron:${job.id}`, {
+            jobId: job.id,
+            jobName: job.name,
+            text: job.payload.text,
+          }));
+          return;
+        }
+
+        // agentTurn payload — route through the agent loop
+        const targetAgent = job.agentId ?? defaultAgentId;
+        const loop = agentLoops.get(targetAgent);
+        if (!loop) {
+          log.warn({ jobId: job.id, agent: targetAgent }, 'Cron: agent not found');
+          return;
+        }
+
+        const inbound: InboundMessage = {
+          channelName: 'cron',
+          sessionKey: `cron:${job.id}`,
+          userId: 'cron-scheduler',
+          content: job.payload.message,
+        };
+
+        try {
+          await handleMessage(inbound);
+        } catch (err) {
+          log.error({ error: err, jobId: job.id }, 'Cron job handler error');
+          throw err;
+        }
+      },
+    });
+
+    try {
+      await cronService.start();
+      const jobs = cronService.listJobs();
+      if (jobs.length > 0) {
+        log.info({ count: jobs.length }, 'Cron scheduler started');
+      }
+    } catch (err) {
+      log.warn({ error: err }, 'Failed to start cron service (non-critical)');
     }
 
     // ── Build Tools + Security Guard ─────────────────────────────────
@@ -837,6 +909,14 @@ export const startCommand = new Command('start')
 
       let responseText = '';
 
+      // Hook: session message received
+      triggerHook(createHookEvent('session', 'message', inbound.sessionKey, {
+        userId: inbound.userId,
+        channel: inbound.channelName,
+        agentId: targetAgentId,
+        content: content.slice(0, 200),
+      })).catch(() => {});
+
       try {
         const overrides = systemPromptOverride ? { systemPrompt: systemPromptOverride } : undefined;
         for await (const event of loop.run(userMessage, session, overrides)) {
@@ -857,6 +937,12 @@ export const startCommand = new Command('start')
         log.error({ error: err }, 'Agent loop error');
         responseText = 'Sorry, something went wrong.';
       }
+
+      // Hook: agent response complete
+      triggerHook(createHookEvent('agent', 'response', inbound.sessionKey, {
+        agentId: targetAgentId,
+        responseLength: responseText.length,
+      })).catch(() => {});
 
       // Log to flat + semantic memory
       try {
@@ -931,6 +1017,11 @@ export const startCommand = new Command('start')
 
     try {
       await gateway.start();
+      await triggerHook(createHookEvent('gateway', 'start', 'system', {
+        port: gatewayPort,
+        host: gatewayHost,
+        agents: registry.map(a => a.id),
+      }));
     } catch (err) {
       console.error(colors.error(`\n  Failed to start gateway: ${err instanceof Error ? err.message : String(err)}\n`));
       process.exit(1);
@@ -991,6 +1082,8 @@ export const startCommand = new Command('start')
       voiceEnabled: !!voicePipeline,
       googleServices: googleAdapters ? Object.keys(googleAdapters) : [],
       agentNames: registry.map(a => a.name),
+      hookCount,
+      cronJobs: cronService.listJobs().filter(j => j.enabled).length,
     };
 
     await showBootSequence(config, bootResults);
@@ -1016,6 +1109,17 @@ export const startCommand = new Command('start')
           log.error({ error: err, channel: channel.name }, 'Error disconnecting channel');
         }
       }
+
+      // Stop cron
+      try {
+        await cronService.stop();
+        console.log(`  ${colors.dim('●')} Cron scheduler stopped`);
+      } catch {
+        // Non-critical
+      }
+
+      // Hook: gateway stopping
+      await triggerHook(createHookEvent('gateway', 'stop', 'system', {})).catch(() => {});
 
       // Close browser
       if (browserAdapter) {

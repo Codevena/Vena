@@ -24,7 +24,7 @@ export type {
 
 // ─── Semantic Index ──────────────────────────────────────────────────────────
 export { SemanticIndex, cosineDistance } from './semantic-index.js';
-export type { IndexEntry, SearchOptions, SearchResult } from './semantic-index.js';
+export type { EmbedFn, IndexEntry, SearchOptions, SearchResult } from './semantic-index.js';
 
 // ─── Context Ranking ─────────────────────────────────────────────────────────
 export { ContextRanker } from './context-ranker.js';

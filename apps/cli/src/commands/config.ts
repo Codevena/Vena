@@ -4,6 +4,7 @@ import prompts from 'prompts';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { GoogleAuth } from '@vena/integrations';
 import {
   canUseLocalCallback,
@@ -877,4 +878,175 @@ configCommand
 
     console.log(chalk.green('\n  \u2713 Claude setup-token saved to config\n'));
     console.log(chalk.yellow('  Note: If Anthropic API calls fail, use a standard API key instead.\n'));
+  });
+
+configCommand
+  .command('reset')
+  .description('Reset configuration to default (backs up current)')
+  .action(async () => {
+    if (!fs.existsSync(CONFIG_PATH)) {
+      console.log(chalk.yellow('\n  No configuration to reset.\n'));
+      return;
+    }
+
+    const confirm = await prompts({
+      type: 'confirm',
+      name: 'ok',
+      message: 'This will back up and remove your config. Continue?',
+      initial: false,
+    }, {
+      onCancel: () => {
+        console.log(chalk.yellow('\n  Cancelled.\n'));
+        process.exit(0);
+      },
+    });
+
+    if (!confirm.ok) {
+      console.log(chalk.yellow('\n  Cancelled.\n'));
+      return;
+    }
+
+    const backupPath = `${CONFIG_PATH}.bak.${Date.now()}`;
+    fs.copyFileSync(CONFIG_PATH, backupPath);
+    fs.unlinkSync(CONFIG_PATH);
+    console.log(chalk.green(`\n  \u2713 Config reset. Backup saved to ${backupPath}`));
+    console.log(chalk.dim(`  Run ${chalk.bold('vena onboard')} to set up again.\n`));
+  });
+
+configCommand
+  .command('doctor')
+  .description('Run diagnostics on your Vena installation')
+  .action(async () => {
+    const venaDir = path.join(os.homedir(), '.vena');
+    const ok = chalk.green('\u2713');
+    const fail = chalk.red('\u2717');
+    const warn = chalk.yellow('!');
+    let issues = 0;
+
+    console.log();
+    console.log(chalk.bold('  Vena Doctor'));
+    console.log(chalk.dim('  Running diagnostics...\n'));
+
+    // 1. Config file
+    if (fs.existsSync(CONFIG_PATH)) {
+      try {
+        JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+        console.log(`  ${ok} Configuration file valid`);
+      } catch {
+        console.log(`  ${fail} Configuration file exists but is invalid JSON`);
+        issues++;
+      }
+    } else {
+      console.log(`  ${fail} No configuration found at ${CONFIG_PATH}`);
+      issues++;
+    }
+
+    // 2. Data directory
+    const dataDir = path.join(venaDir, 'data');
+    if (fs.existsSync(dataDir)) {
+      console.log(`  ${ok} Data directory exists`);
+    } else {
+      console.log(`  ${warn} Data directory missing (will be created on first start)`);
+    }
+
+    // 3. Auth profiles
+    const authPath = path.join(venaDir, 'auth-profiles.json');
+    if (fs.existsSync(authPath)) {
+      try {
+        const auth = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
+        const count = Object.keys(auth.profiles ?? {}).length;
+        console.log(`  ${ok} Auth profiles store (${count} profile${count !== 1 ? 's' : ''})`);
+      } catch {
+        console.log(`  ${warn} Auth profiles file exists but is invalid`);
+      }
+    } else {
+      console.log(`  ${chalk.dim('-')} No auth profiles configured`);
+    }
+
+    // 4. Cron jobs
+    const cronPath = path.join(venaDir, 'cron', 'jobs.json');
+    if (fs.existsSync(cronPath)) {
+      try {
+        const cron = JSON.parse(fs.readFileSync(cronPath, 'utf-8'));
+        const count = Array.isArray(cron.jobs) ? cron.jobs.length : 0;
+        console.log(`  ${ok} Cron store (${count} job${count !== 1 ? 's' : ''})`);
+      } catch {
+        console.log(`  ${warn} Cron store exists but is invalid`);
+      }
+    } else {
+      console.log(`  ${chalk.dim('-')} No cron jobs configured`);
+    }
+
+    // 5. Provider credentials
+    const config = loadRawConfig();
+    if (config) {
+      const providers = (config['providers'] as Record<string, unknown> | undefined) ?? {};
+      const providerNames = Object.keys(providers);
+      if (providerNames.length > 0) {
+        for (const name of providerNames) {
+          const prov = providers[name] as Record<string, unknown> | undefined;
+          if (!prov) continue;
+          const hasKey = Boolean(prov['apiKey'] || prov['auth']);
+          console.log(`  ${hasKey ? ok : warn} Provider: ${name} ${hasKey ? '' : '(no credentials)'}`);
+          if (!hasKey) issues++;
+        }
+      } else {
+        console.log(`  ${fail} No providers configured`);
+        issues++;
+      }
+
+      // 6. Agents
+      const agents = config['agents'] as Record<string, unknown> | undefined;
+      const registry = Array.isArray((agents as Record<string, unknown> | undefined)?.['registry'])
+        ? (agents as Record<string, unknown[]>)['registry'] as Array<Record<string, unknown>>
+        : [];
+      if (registry.length > 0) {
+        console.log(`  ${ok} Agents: ${registry.length} registered`);
+      } else {
+        console.log(`  ${warn} No agents registered`);
+      }
+    }
+
+    // 7. External tools
+    const binChecks = [
+      { name: 'node', required: true },
+      { name: 'pnpm', required: false },
+      { name: 'git', required: false },
+    ];
+
+    console.log();
+    console.log(chalk.dim('  External tools:'));
+    for (const bin of binChecks) {
+      try {
+        const version = execSync(`${bin.name} --version 2>/dev/null`, { encoding: 'utf-8' }).trim().split('\n')[0];
+        console.log(`  ${ok} ${bin.name} ${chalk.dim(`(${version})`)}`);
+      } catch {
+        if (bin.required) {
+          console.log(`  ${fail} ${bin.name} not found`);
+          issues++;
+        } else {
+          console.log(`  ${chalk.dim('-')} ${bin.name} not found (optional)`);
+        }
+      }
+    }
+
+    // 8. Semantic memory DB
+    const semanticDir = path.join(dataDir, 'semantic');
+    const knowledgeDb = path.join(semanticDir, 'knowledge.db');
+    if (fs.existsSync(knowledgeDb)) {
+      const stat = fs.statSync(knowledgeDb);
+      const sizeMb = (stat.size / (1024 * 1024)).toFixed(1);
+      console.log(`  ${ok} Knowledge Graph (${sizeMb} MB)`);
+    } else {
+      console.log(`  ${chalk.dim('-')} Knowledge Graph not initialized`);
+    }
+
+    // Summary
+    console.log();
+    if (issues === 0) {
+      console.log(chalk.green('  All checks passed!'));
+    } else {
+      console.log(chalk.yellow(`  ${issues} issue${issues !== 1 ? 's' : ''} found. Run ${chalk.bold('vena onboard')} to fix.`));
+    }
+    console.log();
   });

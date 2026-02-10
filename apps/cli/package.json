@@ -42,6 +42,8 @@
     "@vena/channels": "workspace:*",
     "@vena/computer": "workspace:*",
     "@vena/core": "workspace:*",
+    "@vena/cron": "workspace:*",
+    "@vena/hooks": "workspace:*",
     "@vena/gateway": "workspace:*",
     "@vena/integrations": "workspace:*",
     "@vena/providers": "workspace:*",

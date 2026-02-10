@@ -32,9 +32,15 @@ importers:
       '@vena/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@vena/cron':
+        specifier: workspace:*
+        version: link:../../packages/cron
       '@vena/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway
+      '@vena/hooks':
+        specifier: workspace:*
+        version: link:../../packages/hooks
       '@vena/integrations':
         specifier: workspace:*
         version: link:../../packages/integrations
@@ -170,6 +176,22 @@ importers:
         specifier: ~5.7.3
         version: 5.7.3
 
+  packages/cron:
+    dependencies:
+      '@vena/shared':
+        specifier: workspace:*
+        version: link:../shared
+      croner:
+        specifier: ^9.0.0
+        version: 9.1.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.9
+      typescript:
+        specifier: ~5.7.3
+        version: 5.7.3
+
   packages/gateway:
     dependencies:
       '@vena/shared':
@@ -194,6 +216,19 @@ importers:
       '@types/ws':
         specifier: ^8.5.14
         version: 8.18.1
+      typescript:
+        specifier: ~5.7.3
+        version: 5.7.3
+
+  packages/hooks:
+    dependencies:
+      '@vena/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.9
       typescript:
         specifier: ~5.7.3
         version: 5.7.3
@@ -1176,6 +1211,10 @@ packages:
   cookie@1.1.1:
     resolution: {integrity: sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ==}
     engines: {node: '>=18'}
+
+  croner@9.1.0:
+    resolution: {integrity: sha512-p9nwwR4qyT5W996vBZhdvBCnMhicY5ytZkR4D1Xj0wuTDEiMnjwR57Q3RXYY/s0EpX6Ay3vgIcfaR+ewGHsi+g==}
+    engines: {node: '>=18.0'}
 
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
@@ -3304,6 +3343,8 @@ snapshots:
   content-type@1.0.5: {}
 
   cookie@1.1.1: {}
+
+  croner@9.1.0: {}
 
   cross-spawn@7.0.6:
     dependencies:

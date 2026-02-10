@@ -1,0 +1,31 @@
+{
+  "name": "@vena/hooks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Codevena/Vena.git", "directory": "packages/hooks" },
+  "keywords": ["vena", "hooks", "lifecycle", "events"],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vena/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.3",
+    "@types/node": "^22.0.0"
+  }
+}

@@ -3,7 +3,7 @@ import { MemoryError } from '@vena/shared';
 import { KnowledgeGraph } from './knowledge-graph.js';
 import { EntityExtractor, type ExtractFn, type ExtractionOptions } from './entity-extractor.js';
 import { RelationshipMapper } from './relationship-mapper.js';
-import { SemanticIndex, type SearchResult } from './semantic-index.js';
+import { SemanticIndex, type EmbedFn, type SearchResult } from './semantic-index.js';
 import { ContextRanker, type MemoryFragment, type RankedFragment } from './context-ranker.js';
 import { MemoryConsolidator, type SummarizeFn, type PromotionCandidate } from './memory-consolidator.js';
 
@@ -14,6 +14,7 @@ export interface MemoryEngineConfig {
   indexDbPath?: string;
   extractFn: ExtractFn;
   summarizeFn: SummarizeFn;
+  embedFn?: EmbedFn;
   extractionOptions?: ExtractionOptions;
 }
 
@@ -79,7 +80,7 @@ export class MemoryEngine {
     this.graph = new KnowledgeGraph(config.dbPath);
     this.extractor = new EntityExtractor(config.extractFn);
     this.mapper = new RelationshipMapper(this.graph);
-    this.index = new SemanticIndex(this.graph, config.indexDbPath);
+    this.index = new SemanticIndex(this.graph, config.indexDbPath, config.embedFn);
     this.ranker = new ContextRanker(this.graph);
     this.consolidator = new MemoryConsolidator(config.summarizeFn, this.graph);
     this.extractionOptions = config.extractionOptions ?? {};
@@ -197,8 +198,8 @@ export class MemoryEngine {
   }> {
     const { maxTokens = 4000, limit = 20, sources, includeGraph = true, timeRange } = options;
 
-    // Search the semantic index
-    const searchResults = this.index.search(query, {
+    // Search the semantic index (uses real embeddings when available)
+    const searchResults = await this.index.searchAsync(query, {
       limit,
       sources,
       timeRange,

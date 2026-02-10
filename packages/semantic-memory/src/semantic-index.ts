@@ -16,6 +16,9 @@ export interface IndexEntry {
   timestamp: string;
 }
 
+/** Function that takes text and returns an embedding vector */
+export type EmbedFn = (text: string) => Promise<Float32Array>;
+
 export interface SearchOptions {
   limit?: number;
   threshold?: number;
@@ -58,10 +61,12 @@ export class SemanticIndex {
   private db: Database.Database;
   private avgDocLength: number = 0;
   private totalDocs: number = 0;
+  private embedFn?: EmbedFn;
 
-  constructor(graph: KnowledgeGraph, dbPath?: string) {
+  constructor(graph: KnowledgeGraph, dbPath?: string, embedFn?: EmbedFn) {
     this.graph = graph;
     this.db = dbPath ? new Database(dbPath) : new Database(':memory:');
+    this.embedFn = embedFn;
     this.db.pragma('journal_mode = WAL');
     this.createTables();
     this.refreshStats();
@@ -141,6 +146,18 @@ export class SemanticIndex {
     transaction();
     this.totalDocs += chunks.length;
     this.refreshStats();
+
+    // Auto-embed chunks when an embedding function is available
+    if (this.embedFn) {
+      const update = this.db.prepare('UPDATE index_entries SET embedding = ? WHERE id = ?');
+      for (let i = 0; i < ids.length; i++) {
+        this.embedFn(chunks[i]!).then(embedding => {
+          const buf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+          update.run(buf, ids[i]);
+        }).catch(() => {}); // Non-critical: embedding failures don't block indexing
+      }
+    }
+
     return ids;
   }
 
@@ -168,7 +185,7 @@ export class SemanticIndex {
    * - Recency boost (15%) - exponential decay favoring recent
    * - Entity density (10%) - content mentioning query-related entities
    */
-  search(query: string, options: SearchOptions = {}): SearchResult[] {
+  search(query: string, options: SearchOptions = {}, queryEmbedding?: Float32Array): SearchResult[] {
     const { limit = 10, threshold = 0.01, sources, timeRange, entityBoost, expandQuery = true } = options;
 
     // Expand query with entity aliases and related terms
@@ -245,14 +262,16 @@ export class SemanticIndex {
 
       // Signal 1: Vector similarity (40%)
       let vectorScore = 0;
-      if (entry.embedding) {
-        // Without query embedding, use token overlap as proxy
-        const querySet = new Set(expandedTerms);
-        const entrySet = new Set(entryTokens);
-        const intersection = [...querySet].filter(t => entrySet.has(t));
-        vectorScore = querySet.size > 0 ? intersection.length / Math.sqrt(querySet.size * entrySet.size) : 0;
+      if (queryEmbedding && entry.embedding) {
+        // Real cosine similarity between query and document embeddings
+        const entryEmbedding = new Float32Array(
+          entry.embedding.buffer,
+          entry.embedding.byteOffset,
+          entry.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT,
+        );
+        vectorScore = cosineDistance(queryEmbedding, entryEmbedding);
       } else {
-        // Token overlap
+        // Fallback: token overlap as proxy for vector similarity
         const querySet = new Set(expandedTerms);
         const entrySet = new Set(entryTokens);
         const intersection = [...querySet].filter(t => entrySet.has(t));
@@ -294,6 +313,22 @@ export class SemanticIndex {
 
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, limit);
+  }
+
+  /**
+   * Async search that auto-embeds the query when an embedding function is available.
+   * Falls back to token-overlap vector scoring when no embedFn is set.
+   */
+  async searchAsync(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
+    let queryEmbedding: Float32Array | undefined;
+    if (this.embedFn) {
+      try {
+        queryEmbedding = await this.embedFn(query);
+      } catch {
+        // Fall back to token-overlap scoring
+      }
+    }
+    return this.search(query, options, queryEmbedding);
   }
 
   // ─── Smart Chunking ───────────────────────────────────────────────────────
