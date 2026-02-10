@@ -4,3 +4,7 @@ export { TelegramMedia } from './telegram/media.js';
 export { WhatsAppChannel } from './whatsapp/adapter.js';
 export type { WhatsAppChannelOptions } from './whatsapp/adapter.js';
 export { WhatsAppMedia } from './whatsapp/media.js';
+export { SlackChannel } from './slack/adapter.js';
+export type { SlackChannelOptions } from './slack/adapter.js';
+export { DiscordChannel } from './discord/adapter.js';
+export type { DiscordChannelOptions } from './discord/adapter.js';

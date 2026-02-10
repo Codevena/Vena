@@ -3,8 +3,11 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { SkillParser } from '@vena/skills';
 import { SkillError } from '@vena/shared';
+import { colors, spinnerLine, boxed } from '../ui/terminal.js';
+import readline from 'node:readline';
 
 const MANAGED_DIR = path.join(os.homedir(), '.vena', 'skills');
 const CONFIG_PATH = path.join(os.homedir(), '.vena', 'vena.json');
@@ -122,6 +125,58 @@ function loadSkills(): SkillInfo[] {
   return skills;
 }
 
+function isGitHubUrl(input: string): boolean {
+  return input.startsWith('https://github.com/') || input.startsWith('git@github.com:');
+}
+
+function cloneGitHubRepo(url: string, tempDir: string): void {
+  execSync(`git clone --depth 1 "${url}" "${tempDir}"`, {
+    stdio: 'pipe',
+    encoding: 'utf-8',
+  });
+}
+
+function findSkillFiles(dirPath: string): string[] {
+  const files: string[] = [];
+
+  function scan(currentPath: string): void {
+    if (!fs.existsSync(currentPath)) return;
+
+    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(currentPath, entry.name);
+
+      // Skip node_modules, .git, etc.
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.')) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        scan(fullPath);
+      } else if (entry.isFile() && entry.name === 'SKILL.md') {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  scan(dirPath);
+  return files;
+}
+
+function confirm(question: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(colors.primary(question + ' (y/N): '), (answer) => {
+      rl.close();
+      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
+    });
+  });
+}
+
 export const skillCommand = new Command('skill')
   .description('Manage skills');
 
@@ -132,65 +187,178 @@ skillCommand
     const skills = loadSkills();
     console.log();
     if (skills.length === 0) {
-      console.log(chalk.dim('  No skills installed.'));
-      console.log(chalk.dim('  Install a skill with:'), chalk.bold('vena skill install <path>'));
+      console.log(colors.dim('  No skills installed.'));
+      console.log(colors.dim('  Install a skill with:'), chalk.bold('vena skill install <path>'));
     } else {
-      console.log(chalk.bold('  Installed Skills'));
-      console.log(chalk.dim('  ----------------'));
+      console.log(colors.primary('  Installed Skills'));
+      console.log(colors.dim('  ' + '─'.repeat(60)));
+      console.log();
+
       for (const skill of skills) {
-        const sourceLabel = skill.source === 'bundled' ? chalk.blue('[bundled]')
-          : skill.source === 'managed' ? chalk.green('[managed]')
-          : chalk.yellow('[workspace]');
-        console.log(`  ${sourceLabel} ${chalk.bold(skill.name)} ${chalk.dim(`v${skill.version}`)}`);
-        console.log(`    ${skill.description}`);
+        const sourceLabel = skill.source === 'bundled' ? colors.accent('[bundled]')
+          : skill.source === 'managed' ? colors.success('[managed]')
+          : colors.secondary('[workspace]');
+
+        console.log(`  ${sourceLabel} ${chalk.bold(skill.name)} ${colors.dim(`v${skill.version}`)}`);
+        console.log(`    ${colors.white(skill.description)}`);
+
         if (skill.triggers.length > 0) {
-          console.log(`    Triggers: ${chalk.dim(skill.triggers.join(', '))}`);
+          console.log(`    ${colors.dim('Triggers:')} ${colors.secondary(skill.triggers.join(', '))}`);
         }
+
+        console.log(`    ${colors.dim('Source:')} ${colors.dim(skill.path)}`);
+        console.log();
       }
+
+      console.log(colors.dim(`  Total: ${skills.length} skill${skills.length !== 1 ? 's' : ''}`));
     }
     console.log();
   });
 
 skillCommand
-  .command('install <pathOrUrl>')
-  .description('Install a skill from a SKILL.md file')
-  .action((pathOrUrl: string) => {
-    const resolved = resolvePath(pathOrUrl.startsWith('~') ? pathOrUrl : path.resolve(pathOrUrl));
+  .command('install <source>')
+  .description('Install skills from a local path or GitHub repository')
+  .action(async (source: string) => {
+    console.log();
 
-    if (!fs.existsSync(resolved)) {
-      console.log(chalk.red(`\n  File not found: ${resolved}\n`));
-      return;
-    }
+    let skillFiles: string[] = [];
+    let tempDir: string | null = null;
 
-    let skill: SkillInfo | null = null;
     try {
-      const content = fs.readFileSync(resolved, 'utf-8');
-      skill = toSkillInfo(content, resolved, 'managed');
-    } catch (error) {
-      const message = error instanceof SkillError ? error.message : String(error);
-      console.log(chalk.red(`\n  Failed to parse skill: ${message}\n`));
-      return;
+      // Handle GitHub URLs
+      if (isGitHubUrl(source)) {
+        await spinnerLine('Cloning repository...', 800);
+
+        tempDir = path.join(os.tmpdir(), `vena-skill-${Date.now()}`);
+        fs.mkdirSync(tempDir, { recursive: true });
+
+        try {
+          cloneGitHubRepo(source, tempDir);
+        } catch (error) {
+          console.log(colors.error(`\n  Failed to clone repository: ${error instanceof Error ? error.message : String(error)}\n`));
+          if (tempDir && fs.existsSync(tempDir)) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          }
+          return;
+        }
+
+        await spinnerLine('Scanning for SKILL.md files...', 600);
+        skillFiles = findSkillFiles(tempDir);
+      } else {
+        // Handle local paths
+        const resolved = resolvePath(source.startsWith('~') ? source : path.resolve(source));
+
+        if (!fs.existsSync(resolved)) {
+          console.log(colors.error(`\n  Path not found: ${resolved}\n`));
+          return;
+        }
+
+        const stat = fs.statSync(resolved);
+        if (stat.isDirectory()) {
+          await spinnerLine('Scanning for SKILL.md files...', 600);
+          skillFiles = findSkillFiles(resolved);
+        } else if (resolved.endsWith('.md')) {
+          skillFiles = [resolved];
+        } else {
+          console.log(colors.error(`\n  Invalid file: ${resolved}\n`));
+          console.log(colors.dim('  Please provide a SKILL.md file or directory containing SKILL.md files.\n'));
+          return;
+        }
+      }
+
+      if (skillFiles.length === 0) {
+        console.log(colors.dim('\n  No SKILL.md files found in the source.\n'));
+        return;
+      }
+
+      console.log(colors.secondary(`\n  Found ${skillFiles.length} skill file${skillFiles.length !== 1 ? 's' : ''}\n`));
+
+      // Validate and install each skill
+      const installed: string[] = [];
+      const failed: Array<{ file: string; error: string }> = [];
+
+      fs.mkdirSync(MANAGED_DIR, { recursive: true });
+
+      for (const filePath of skillFiles) {
+        let skill: SkillInfo | null = null;
+
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          skill = toSkillInfo(content, filePath, 'managed');
+        } catch (error) {
+          const message = error instanceof SkillError ? error.message : String(error);
+          failed.push({ file: path.basename(filePath), error: message });
+          continue;
+        }
+
+        // Check if skill already exists
+        const existingSkills = loadSkills().filter(s => s.source === 'managed');
+        const existing = existingSkills.find(s => s.name === skill.name);
+
+        if (existing) {
+          console.log(colors.dim(`  Skipping ${skill.name} (already installed)`));
+          continue;
+        }
+
+        const destDir = path.join(MANAGED_DIR, skill.name);
+        const destPath = path.join(destDir, 'SKILL.md');
+        fs.mkdirSync(destDir, { recursive: true });
+        fs.copyFileSync(filePath, destPath);
+
+        installed.push(skill.name);
+        console.log(colors.success(`  ✓ Installed ${skill.name} v${skill.version}`));
+      }
+
+      console.log();
+
+      if (installed.length > 0) {
+        const lines = [
+          colors.success(`Successfully installed ${installed.length} skill${installed.length !== 1 ? 's' : ''}`),
+          '',
+          ...installed.map(name => colors.white(`  • ${name}`)),
+        ];
+        console.log(boxed(lines, { title: 'Installation Complete', borderColor: colors.success }));
+      }
+
+      if (failed.length > 0) {
+        console.log();
+        console.log(colors.error(`  Failed to install ${failed.length} skill${failed.length !== 1 ? 's' : ''}:`));
+        for (const { file, error } of failed) {
+          console.log(colors.dim(`    ${file}: ${error}`));
+        }
+      }
+
+      console.log();
+    } finally {
+      // Clean up temp directory
+      if (tempDir && fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
     }
-
-    fs.mkdirSync(MANAGED_DIR, { recursive: true });
-    const destDir = path.join(MANAGED_DIR, skill.name);
-    const destPath = path.join(destDir, 'SKILL.md');
-    fs.mkdirSync(destDir, { recursive: true });
-    fs.copyFileSync(resolved, destPath);
-
-    console.log(chalk.green(`\n  \u2713 Installed skill: ${skill.name}`));
-    console.log(chalk.dim(`    ${destPath}\n`));
   });
 
 skillCommand
-  .command('remove <name>')
+  .command('uninstall <name>')
+  .alias('remove')
   .description('Remove a managed skill')
-  .action((name: string) => {
+  .action(async (name: string) => {
     const skills = loadSkills().filter(s => s.source === 'managed');
     const skill = skills.find(s => s.name.toLowerCase() === name.toLowerCase());
 
     if (!skill) {
-      console.log(chalk.yellow(`\n  Skill "${name}" not found in managed skills.\n`));
+      console.log(colors.dim(`\n  Skill "${name}" not found in managed skills.\n`));
+      return;
+    }
+
+    console.log();
+    console.log(colors.secondary(`  Skill: ${skill.name} v${skill.version}`));
+    console.log(colors.dim(`  Path: ${skill.path}`));
+    console.log();
+
+    const confirmed = await confirm('Are you sure you want to remove this skill?');
+
+    if (!confirmed) {
+      console.log(colors.dim('\n  Cancelled.\n'));
       return;
     }
 
@@ -201,7 +369,7 @@ skillCommand
     } else {
       fs.unlinkSync(skillPath);
     }
-    console.log(chalk.green(`\n  \u2713 Removed skill: ${skill.name}\n`));
+    console.log(colors.success(`\n  ✓ Removed skill: ${skill.name}\n`));
   });
 
 skillCommand

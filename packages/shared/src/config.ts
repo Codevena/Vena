@@ -65,6 +65,17 @@ export const venaConfigSchema = z.object({
     whatsapp: z.object({
       enabled: z.boolean().default(false),
     }).optional(),
+    slack: z.object({
+      enabled: z.boolean().default(false),
+      token: z.string().optional(),
+      signingSecret: z.string().optional(),
+      appToken: z.string().optional(),
+    }).optional(),
+    discord: z.object({
+      enabled: z.boolean().default(false),
+      token: z.string().optional(),
+      applicationId: z.string().optional(),
+    }).optional(),
   }).default({}),
 
   gateway: z.object({

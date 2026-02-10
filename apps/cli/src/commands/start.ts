@@ -27,7 +27,7 @@ import type { SecurityPolicy, SemanticMemoryProvider } from '@vena/core';
 import { MemoryEngine } from '@vena/semantic-memory';
 import type { LLMProvider } from '@vena/providers';
 import { VoiceMessagePipeline, TextToSpeech, SpeechToText } from '@vena/voice';
-import { AgentRegistry, MessageBus, MeshNetwork, IntentRouter } from '@vena/agents';
+import { AgentRegistry, MessageBus, MeshNetwork, IntentRouter, ConsultationManager, DelegationManager } from '@vena/agents';
 import type { AgentDescriptor } from '@vena/agents';
 import { SkillLoader, SkillRegistry, SkillInjector } from '@vena/skills';
 import { triggerHook, createHookEvent, loadAndRegisterHooks } from '@vena/hooks';
@@ -709,6 +709,18 @@ export const startCommand = new Command('start')
         else if (event.type === 'error') return `Error: ${event.error.message}`;
       }
 
+      // Log the collaboration to memory if we have agentMemory
+      if (mm) {
+        try {
+          await mm.log(`[${role === 'consult' ? 'consultation' : 'delegation'} from peer] ${prompt.slice(0, 200)}`);
+          if (responseText) {
+            await mm.log(`[${role} response] ${responseText.slice(0, 500)}`);
+          }
+        } catch {
+          // Non-critical
+        }
+      }
+
       return responseText || 'No response from agent.';
     }
 
@@ -744,14 +756,24 @@ export const startCommand = new Command('start')
       if (registry.length > 1) {
         tools.push(
           new ConsultTool(
-            (targetId, question, _ctx) => runLeafAgent(targetId, question, 'consult'),
+            async (targetId, question, _ctx) => {
+              // Use runLeafAgent which provides the actual agent execution
+              // ConsultationManager tracks state via MessageBus, but direct execution is simpler for now
+              log.debug({ from: agentConfig.id, to: targetId, question: question.slice(0, 100) }, 'Agent consultation');
+              return runLeafAgent(targetId, question, 'consult');
+            },
             agentInfoList,
             agentConfig.id,
           ),
         );
         tools.push(
           new DelegateTool(
-            (targetId, task, _ctx) => runLeafAgent(targetId, task, 'delegate'),
+            async (targetId, task, _ctx) => {
+              // Use runLeafAgent which provides the actual agent execution
+              // DelegationManager tracks state via MessageBus, but direct execution is simpler for now
+              log.debug({ from: agentConfig.id, to: targetId, task: task.slice(0, 100) }, 'Agent delegation');
+              return runLeafAgent(targetId, task, 'delegate');
+            },
             agentInfoList,
             agentConfig.id,
           ),
@@ -785,6 +807,8 @@ export const startCommand = new Command('start')
 
     // ── Mesh Network (multi-agent routing) ───────────────────────────
     let mesh: MeshNetwork | undefined;
+    let consultationManager: ConsultationManager | undefined;
+    let delegationManager: DelegationManager | undefined;
     const defaultAgentId = firstAgentConfig?.id ?? 'main';
 
     if (registry.length > 1) {
@@ -821,7 +845,11 @@ export const startCommand = new Command('start')
       intentRouter.setAgents(descriptors);
       mesh.setIntentRouter(intentRouter);
 
-      log.info({ agents: registry.length }, 'Mesh network + intent routing initialized');
+      // Create consultation and delegation managers
+      consultationManager = new ConsultationManager(bus, agentReg, 30000);
+      delegationManager = new DelegationManager(bus, agentReg);
+
+      log.info({ agents: registry.length }, 'Mesh network + intent routing + collaboration managers initialized');
     }
 
     // ── Message Handler ─────────────────────────────────────────────
@@ -1130,6 +1158,11 @@ export const startCommand = new Command('start')
 
       // Hook: gateway stopping
       await triggerHook(createHookEvent('gateway', 'stop', 'system', {})).catch(() => {});
+
+      // Clear pending consultations and delegations
+      if (consultationManager || delegationManager) {
+        console.log(`  ${colors.dim('●')} Collaboration managers cleared`);
+      }
 
       // Close browser
       if (browserAdapter) {

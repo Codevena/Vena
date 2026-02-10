@@ -5,3 +5,4 @@ export { SessionStore, type SessionEntry } from './session-store.js';
 export { ConfigWatcher } from './config-watcher.js';
 export { authMiddleware, type AuthConfig } from './middleware/auth.js';
 export { RateLimiter, type RateLimitConfig } from './middleware/rate-limit.js';
+export { registerDashboard, type DashboardData } from './dashboard.js';

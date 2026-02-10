@@ -8,6 +8,7 @@ import { controlAPI, type ControlAPIOptions } from './api/control.js';
 import { openaiCompatAPI, type OpenAICompatOptions } from './api/openai-compat.js';
 import { authMiddleware, type AuthConfig } from './middleware/auth.js';
 import { RateLimiter, type RateLimitConfig } from './middleware/rate-limit.js';
+import { registerDashboard, type DashboardData } from './dashboard.js';
 
 const log = createLogger('gateway:server');
 
@@ -94,17 +95,52 @@ export class GatewayServer {
     return this.laneQueue;
   }
 
+  private getDashboardData(): DashboardData {
+    const uptime = Math.floor((Date.now() - this.startedAt.getTime()) / 1000);
+    const mem = process.memoryUsage();
+
+    // Get agents from provider if available
+    const agents = this.agentsProvider
+      ? this.agentsProvider().map(a => ({
+          id: a.id,
+          name: a.name,
+          provider: 'unknown',
+          model: 'unknown',
+          status: a.status,
+        }))
+      : [];
+
+    // No cron jobs for now (could be wired later)
+    const cronJobs: Array<{ name: string; schedule: string; nextRun?: string; enabled: boolean }> = [];
+
+    // No recent activity tracking yet (could be wired later)
+    const recentActivity: Array<{ timestamp: number; type: string; summary: string }> = [];
+
+    return {
+      uptime,
+      version: '0.1.0',
+      agents,
+      cronJobs,
+      memory: {
+        heapUsed: mem.heapUsed,
+        heapTotal: mem.heapTotal,
+        rss: mem.rss,
+      },
+      recentActivity,
+    };
+  }
+
   async start(): Promise<void> {
     // Health check route
     this.fastify.get('/health', async () => {
       return { status: 'ok', uptime: Math.floor((Date.now() - this.startedAt.getTime()) / 1000) };
     });
 
-    // Register auth middleware (excludes health check)
+    // Register auth middleware (excludes health check and dashboard)
     const authConfig: AuthConfig = {
       enabled: this.config.auth?.enabled ?? false,
       apiKeys: this.config.auth?.apiKeys ?? [],
-      excludePaths: ['/health'],
+      excludePaths: ['/health', '/dashboard', '/dashboard/api/status', '/dashboard/api/agents', '/dashboard/api/cron', '/dashboard/api/memory'],
     };
     await this.fastify.register(authMiddleware(authConfig));
 
@@ -118,6 +154,9 @@ export class GatewayServer {
           .send({ error: 'Too many requests', retryAfter: result.retryAfter });
       }
     });
+
+    // Register dashboard
+    registerDashboard(this.fastify, () => this.getDashboardData());
 
     // Register control API
     const controlOpts: ControlAPIOptions = {

@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/Codevena/Vena.git", "directory": "packages/channels" },
-  "keywords": ["vena", "telegram", "whatsapp", "channels"],
+  "keywords": ["vena", "telegram", "whatsapp", "slack", "discord", "channels"],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -26,7 +26,9 @@
     "grammy": "^1.31.0",
     "@whiskeysockets/baileys": "^6.7.0",
     "@hapi/boom": "^10.0.1",
-    "pino": "^9.6.0"
+    "pino": "^9.6.0",
+    "@slack/bolt": "^4.1.0",
+    "discord.js": "^14.17.3"
   },
   "devDependencies": {
     "typescript": "~5.7.3",
