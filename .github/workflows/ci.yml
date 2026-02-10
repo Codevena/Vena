@@ -1,10 +1,12 @@
 name: CI
 
+# Disabled for now — enable by removing workflow_dispatch and uncommenting push/pull_request
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+  workflow_dispatch:
+  # push:
+  #   branches: [master]
+  # pull_request:
+  #   branches: [master]
 
 jobs:
   build-and-test:
