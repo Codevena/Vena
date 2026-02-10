@@ -5,7 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { AuthConfig, VenaConfig } from '@vena/shared';
-import { listCharacters } from '@vena/shared';
+import { listCharacters, loadAuthProfileStore, getAuthProfile } from '@vena/shared';
+import { promptAuthGrouped, providerFromChoice } from '../lib/auth-prompt.js';
+import { applyAuthChoice } from '../lib/auth-apply.js';
 import { GoogleAuth } from '@vena/integrations';
 import {
   canUseLocalCallback,
@@ -123,14 +125,14 @@ function normalizeString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-type OAuthFlowResult = {
+export type OAuthFlowResult = {
   auth: AuthConfig;
   extras?: Record<string, unknown>;
 };
 
 type AuthMethod = 'api_key' | 'oauth_login' | 'oauth_token' | 'cli';
 
-async function promptToken(message: string): Promise<string> {
+export async function promptToken(message: string): Promise<string> {
   const tokenResponse = await prompts({
     type: 'password',
     name: 'token',
@@ -162,7 +164,7 @@ async function promptText(message: string): Promise<string> {
   return (response.value as string) ?? '';
 }
 
-async function runGeminiOAuthFlow(): Promise<OAuthFlowResult | null> {
+export async function runGeminiOAuthFlow(): Promise<OAuthFlowResult | null> {
   let clientId = resolveEnvValue(GEMINI_CLIENT_ID_KEYS);
   let clientSecret = resolveEnvValue(GEMINI_CLIENT_SECRET_KEYS);
 
@@ -372,7 +374,7 @@ async function runGeminiOAuthFlow(): Promise<OAuthFlowResult | null> {
   };
 }
 
-async function runOpenAICodexOAuthFlow(): Promise<OAuthFlowResult | null> {
+export async function runOpenAICodexOAuthFlow(): Promise<OAuthFlowResult | null> {
   let clientId = resolveEnvValue(OPENAI_OAUTH_CLIENT_ID_KEYS);
   let clientSecret = resolveEnvValue(OPENAI_OAUTH_CLIENT_SECRET_KEYS);
 
@@ -527,7 +529,7 @@ async function runOpenAICodexOAuthFlow(): Promise<OAuthFlowResult | null> {
   };
 }
 
-async function runClaudeSetupTokenFlow(): Promise<OAuthFlowResult | null> {
+export async function runClaudeSetupTokenFlow(): Promise<OAuthFlowResult | null> {
   console.log();
   console.log(chalk.bold('  Claude Code setup-token'));
   console.log(chalk.dim('  Run `claude setup-token` in another terminal, then paste it here.'));
@@ -654,6 +656,43 @@ async function runGoogleWorkspaceOAuthFlow(): Promise<{ clientId: string; client
     clientSecret,
     scopes: scopeKeys,
   };
+}
+
+// ── Model Choices ─────────────────────────────────────────────────
+export const MODEL_CHOICES: Record<string, Array<{ title: string; value: string }>> = {
+  anthropic: [
+    { title: `${colors.primary('●')} Claude Opus 4.6        ${colors.dim('─ Most capable, best reasoning')}`, value: 'claude-opus-4-6' },
+    { title: `${colors.primary('●')} Claude Sonnet 4.5      ${colors.dim('─ Fast & capable (Recommended)')}`, value: 'claude-sonnet-4-5-20250929' },
+    { title: `${colors.primary('●')} Claude Haiku 4.5       ${colors.dim('─ Fastest, cheapest')}`, value: 'claude-haiku-4-5-20251001' },
+  ],
+  openai: [
+    { title: `${colors.primary('●')} GPT-4o                 ${colors.dim('─ Most capable, multimodal')}`, value: 'gpt-4o' },
+    { title: `${colors.primary('●')} GPT-4o Mini            ${colors.dim('─ Faster, cheaper')}`, value: 'gpt-4o-mini' },
+    { title: `${colors.primary('●')} o1                     ${colors.dim('─ Advanced reasoning')}`, value: 'o1' },
+    { title: `${colors.primary('●')} o3-mini                ${colors.dim('─ Fast reasoning')}`, value: 'o3-mini' },
+  ],
+  gemini: [
+    { title: `${colors.primary('●')} Gemini 3 Pro (Preview)    ${colors.dim('─ Most capable')}`, value: 'gemini-3-pro-preview' },
+    { title: `${colors.primary('●')} Gemini 3 Flash (Preview)  ${colors.dim('─ Fast & efficient (Recommended)')}`, value: 'gemini-3-flash-preview' },
+    { title: `${colors.primary('●')} Gemini 2.5 Pro            ${colors.dim('─ Strong previous gen')}`, value: 'gemini-2.5-pro' },
+    { title: `${colors.primary('●')} Gemini 2.5 Flash          ${colors.dim('─ Balanced cost/perf')}`, value: 'gemini-2.5-flash' },
+    { title: `${colors.primary('●')} Gemini 2.5 Flash Lite     ${colors.dim('─ Cheapest')}`, value: 'gemini-2.5-flash-lite' },
+  ],
+  ollama: [
+    { title: `${colors.primary('●')} Llama 3.1              ${colors.dim('─ Meta open-source')}`, value: 'llama3.1' },
+    { title: `${colors.primary('●')} Mistral Large          ${colors.dim('─ Best open model')}`, value: 'mistral-large' },
+    { title: `${colors.primary('●')} DeepSeek V3            ${colors.dim('─ Strong reasoning')}`, value: 'deepseek-v3' },
+    { title: `${colors.primary('●')} Qwen 2.5               ${colors.dim('─ Multilingual')}`, value: 'qwen2.5' },
+  ],
+};
+
+export function getModelChoices(providerKey: string): Array<{ title: string; value: string }> {
+  const choices = [...(MODEL_CHOICES[providerKey] ?? [])];
+  choices.push({
+    title: `${colors.dim('●')} Custom...              ${colors.dim('─ Enter any model ID manually')}`,
+    value: '__custom__',
+  });
+  return choices;
 }
 
 // ── Welcome Animation ─────────────────────────────────────────────────
@@ -847,41 +886,9 @@ export const onboardCommand = new Command('onboard')
     const providerKey = provider === 'google' ? 'gemini' : provider;
 
     // ── Step 2: Choose Model ────────────────────────────────────────
-    const MODEL_CHOICES: Record<string, Array<{ title: string; value: string }>> = {
-      anthropic: [
-        { title: `${colors.primary('●')} Claude Opus 4.6        ${colors.dim('─ Most capable, best reasoning')}`, value: 'claude-opus-4-6' },
-        { title: `${colors.primary('●')} Claude Sonnet 4.5      ${colors.dim('─ Fast & capable (Recommended)')}`, value: 'claude-sonnet-4-5-20250929' },
-        { title: `${colors.primary('●')} Claude Haiku 4.5       ${colors.dim('─ Fastest, cheapest')}`, value: 'claude-haiku-4-5-20251001' },
-      ],
-      openai: [
-        { title: `${colors.primary('●')} GPT-4o                 ${colors.dim('─ Most capable, multimodal')}`, value: 'gpt-4o' },
-        { title: `${colors.primary('●')} GPT-4o Mini            ${colors.dim('─ Faster, cheaper')}`, value: 'gpt-4o-mini' },
-        { title: `${colors.primary('●')} o1                     ${colors.dim('─ Advanced reasoning')}`, value: 'o1' },
-        { title: `${colors.primary('●')} o3-mini                ${colors.dim('─ Fast reasoning')}`, value: 'o3-mini' },
-      ],
-      gemini: [
-        { title: `${colors.primary('●')} Gemini 3 Pro (Preview)    ${colors.dim('─ Most capable')}`, value: 'gemini-3-pro-preview' },
-        { title: `${colors.primary('●')} Gemini 3 Flash (Preview)  ${colors.dim('─ Fast & efficient (Recommended)')}`, value: 'gemini-3-flash-preview' },
-        { title: `${colors.primary('●')} Gemini 2.5 Pro            ${colors.dim('─ Strong previous gen')}`, value: 'gemini-2.5-pro' },
-        { title: `${colors.primary('●')} Gemini 2.5 Flash          ${colors.dim('─ Balanced cost/perf')}`, value: 'gemini-2.5-flash' },
-        { title: `${colors.primary('●')} Gemini 2.5 Flash Lite     ${colors.dim('─ Cheapest')}`, value: 'gemini-2.5-flash-lite' },
-      ],
-      ollama: [
-        { title: `${colors.primary('●')} Llama 3.1              ${colors.dim('─ Meta open-source')}`, value: 'llama3.1' },
-        { title: `${colors.primary('●')} Mistral Large          ${colors.dim('─ Best open model')}`, value: 'mistral-large' },
-        { title: `${colors.primary('●')} DeepSeek V3            ${colors.dim('─ Strong reasoning')}`, value: 'deepseek-v3' },
-        { title: `${colors.primary('●')} Qwen 2.5               ${colors.dim('─ Multilingual')}`, value: 'qwen2.5' },
-      ],
-    };
-
     printStepHeader(2, totalSteps, 'Choose Your Model', 'Select which model to use, or type a custom model ID.');
 
-    const modelChoices = MODEL_CHOICES[providerKey] ?? [];
-    // Add "Custom" option at the end
-    modelChoices.push({
-      title: `${colors.dim('●')} Custom...              ${colors.dim('─ Enter any model ID manually')}`,
-      value: '__custom__',
-    });
+    const modelChoices = getModelChoices(providerKey);
 
     const modelResponse = await prompts({
       type: 'select',
@@ -918,116 +925,56 @@ export const onboardCommand = new Command('onboard')
 
     console.log(`  ${colors.success('✓')} ${colors.dim(`Model: ${selectedModel}`)}`);
 
-    // ── Step 3: Authentication ──────────────────────────────────────
+    // ── Step 3: Authentication (Grouped Auth Prompt) ──────────────
+    const venaDir = path.join(os.homedir(), '.vena');
+    fs.mkdirSync(venaDir, { recursive: true });
+    const authStore = loadAuthProfileStore(venaDir);
+
+    let authProfileName: string | undefined;
     let apiKey = '';
     let authType: 'api_key' | 'oauth_token' = 'api_key';
     let selectedAuthMethod: AuthMethod = 'api_key';
     let providerAuth: AuthConfig | null = null;
     let providerExtras: Record<string, unknown> = {};
 
-    if (providerKey !== 'ollama') {
-      printStepHeader(3, totalSteps, 'Authentication', `Choose how to authenticate with ${provider}.`);
+    printStepHeader(3, totalSteps, 'Authentication', 'Choose your model provider and auth method.');
 
-      const choices: Array<{ title: string; value: AuthMethod }> = [
-        { title: `${colors.primary('●')} API Key       ${colors.dim('─ Standard API key from provider dashboard')}`, value: 'api_key' },
-      ];
+    const authChoice = await promptAuthGrouped({ includeSkip: false });
+    const authResult = await applyAuthChoice(authChoice, authStore, venaDir);
 
-      if (providerKey === 'anthropic') {
-        choices.push({ title: `${colors.primary('●')} Setup Token  ${colors.dim('─ Claude Code setup-token')}`, value: 'oauth_login' });
-      } else if (providerKey === 'openai') {
-        choices.push({ title: `${colors.primary('●')} Codex OAuth  ${colors.dim('─ ChatGPT sign-in (recommended)')}`, value: 'oauth_login' });
-        choices.push({ title: `${colors.primary('●')} Paste Token  ${colors.dim('─ OAuth/Bearer token (Advanced)')}`, value: 'oauth_token' });
-      } else if (providerKey === 'gemini') {
-        choices.push({ title: `${colors.primary('●')} Gemini CLI   ${colors.dim('─ Use local Gemini CLI (no API key)')}`, value: 'cli' });
-      } else {
-        choices.push({ title: `${colors.primary('●')} OAuth/Bearer  ${colors.dim('─ Paste an access token (Advanced)')}`, value: 'oauth_token' });
-      }
+    if (authResult) {
+      authProfileName = authResult.profileName;
+      providerExtras = authResult.extras ?? {};
 
-      const authChoice = await prompts({
-        type: 'select',
-        name: 'authMethod',
-        message: colors.primary('▸') + ' Auth Method',
-        choices,
-      }, {
-        onCancel: () => {
-          console.log();
-          console.log(colors.secondary('  Setup cancelled.'));
-          console.log();
-          process.exit(0);
-        },
-      });
-
-      const authMethod = authChoice.authMethod as AuthMethod;
-      selectedAuthMethod = authMethod;
-      authType = authMethod === 'api_key' ? 'api_key' : 'oauth_token';
-      if (authMethod !== 'cli') {
-        printAuthHelp(providerKey, authType);
-      }
-
-      if (authMethod === 'api_key') {
-        console.log();
-        const keyResponse = await prompts({
-          type: 'password',
-          name: 'apiKey',
-          message: colors.primary('▸') + ' API Key',
-        }, {
-          onCancel: () => {
-            console.log();
-            console.log(colors.secondary('  Setup cancelled.'));
-            console.log();
-            process.exit(0);
-          },
-        });
-        apiKey = keyResponse.apiKey as string;
-        if (apiKey) {
-          console.log(`  ${colors.success('✓')} ${colors.dim('API key saved')}`);
+      // Also populate legacy inline config for backward compat
+      const profile = getAuthProfile(authStore, authResult.profileName);
+      if (profile) {
+        if (profile.type === 'api_key') {
+          apiKey = profile.key;
+          selectedAuthMethod = 'api_key';
+          authType = 'api_key';
+        } else if (profile.type === 'oauth') {
+          providerAuth = {
+            type: 'oauth_token',
+            oauthToken: profile.accessToken,
+            refreshToken: profile.refreshToken,
+            tokenUrl: profile.tokenUrl,
+            clientId: profile.clientId,
+            clientSecret: profile.clientSecret,
+            expiresAt: profile.expiresAt,
+          };
+          selectedAuthMethod = 'oauth_login';
+          authType = 'oauth_token';
+        } else if (profile.type === 'token' && profile.token === '__cli__') {
+          selectedAuthMethod = 'cli';
+          providerExtras = { ...providerExtras, transport: 'cli' };
+        } else if (profile.type === 'token' && profile.token === '__local__') {
+          selectedAuthMethod = 'api_key';
         }
-      } else if (authMethod === 'oauth_token') {
-        console.log();
-        console.log(`  ${colors.dim('Paste your OAuth2 access token or bearer token.')}`);
-        console.log();
-        const token = await promptToken('OAuth Token');
-        if (!token) {
-          console.log(colors.secondary('\n  OAuth token is required.\n'));
-          process.exit(0);
-        }
-        providerAuth = { type: 'oauth_token', oauthToken: token };
-        console.log(`  ${colors.success('✓')} ${colors.dim('OAuth token saved')}`);
-      } else if (authMethod === 'cli') {
-        const geminiPath = findInPath('gemini');
-        if (!geminiPath) {
-          console.log();
-          console.log(chalk.red('  Gemini CLI not found.'));
-          console.log(chalk.dim('  Install it first: brew install gemini-cli (or npm install -g @google/gemini-cli).'));
-          console.log(chalk.dim('  Then run `gemini` once to complete login.'));
-          console.log();
-          process.exit(1);
-        }
-        providerExtras = { ...providerExtras, transport: 'cli' };
-        console.log(`  ${colors.success('✓')} ${colors.dim('Gemini CLI selected')}`);
-      } else {
-        let result: OAuthFlowResult | null = null;
-        if (providerKey === 'anthropic') {
-          result = await runClaudeSetupTokenFlow();
-        } else if (providerKey === 'openai') {
-          result = await runOpenAICodexOAuthFlow();
-        } else if (providerKey === 'gemini') {
-          result = await runGeminiOAuthFlow();
-        }
-
-        if (!result) {
-          console.log(colors.secondary('\n  OAuth setup failed. Please try again.\n'));
-          process.exit(0);
-        }
-
-        providerAuth = result.auth;
-        providerExtras = result.extras ?? {};
-        console.log(`  ${colors.success('✓')} ${colors.dim('OAuth setup complete')}`);
       }
     } else {
-      printStepHeader(3, totalSteps, 'Local Provider Selected', 'No API key needed for Ollama. Make sure it\'s running at localhost:11434.');
-      console.log(`  ${colors.success('✓')} ${colors.dim('Ollama selected - no API key required')}`);
-      await sleep(500);
+      console.log(colors.secondary('\n  Auth setup failed. Please try again.\n'));
+      process.exit(0);
     }
 
     // ── Step 3: Name Your Agent ───────────────────────────────────────
@@ -1287,6 +1234,7 @@ export const onboardCommand = new Command('onboard')
           trustLevel: 'full',
           channels,
           character: selectedCharacter,
+          ...(authProfileName ? { authProfile: authProfileName } : {}),
         }],
         mesh: {
           enabled: true,
@@ -1338,10 +1286,8 @@ export const onboardCommand = new Command('onboard')
       } : {}),
     };
 
-    // Create config directory
-    const venaDir = path.join(os.homedir(), '.vena');
+    // Create config directory (venaDir declared earlier in step 3)
     const skillsDir = path.join(venaDir, 'skills');
-    fs.mkdirSync(venaDir, { recursive: true });
     fs.mkdirSync(skillsDir, { recursive: true });
 
     // Write config

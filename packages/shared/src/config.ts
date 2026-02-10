@@ -40,6 +40,7 @@ const agentConfigSchema = z.object({
   channels: z.array(z.string()).default([]),
   voiceId: z.string().optional(),
   character: z.string().default('nova'),
+  authProfile: z.string().optional(),
 });
 
 export const venaConfigSchema = z.object({

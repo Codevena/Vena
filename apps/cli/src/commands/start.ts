@@ -638,7 +638,7 @@ export const startCommand = new Command('start')
       let agentProvider: LLMProvider;
       let agentProviderName = providerName;
       try {
-        const result = createProvider(config, agentConfig.provider, agentConfig.model);
+        const result = createProvider(config, agentConfig.provider, agentConfig.model, agentConfig);
         agentProvider = result.provider;
         agentProviderName = result.providerName;
       } catch {

@@ -4,8 +4,10 @@ import os from 'node:os';
 import {
   parseConfig,
   resolveConfigEnvVars,
+  loadAuthProfileStore,
+  getAuthProfile,
 } from '@vena/shared';
-import type { VenaConfig } from '@vena/shared';
+import type { VenaConfig, AgentConfig } from '@vena/shared';
 import type { LLMProvider } from '@vena/providers';
 import {
   AnthropicProvider,
@@ -17,10 +19,11 @@ import {
 
 // ── Paths ────────────────────────────────────────────────────────────
 
-export const CONFIG_PATH = path.join(os.homedir(), '.vena', 'vena.json');
-export const DATA_DIR = path.join(os.homedir(), '.vena', 'data');
+export const VENA_DIR = path.join(os.homedir(), '.vena');
+export const CONFIG_PATH = path.join(VENA_DIR, 'vena.json');
+export const DATA_DIR = path.join(VENA_DIR, 'data');
 export const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
-export const WHATSAPP_AUTH_DIR = path.join(os.homedir(), '.vena', 'whatsapp-auth');
+export const WHATSAPP_AUTH_DIR = path.join(VENA_DIR, 'whatsapp-auth');
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -39,28 +42,77 @@ export function ensureDataDir(): void {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+// ── Auth Profile Resolution ─────────────────────────────────────────
+
+function resolveAuthFromProfile(
+  profileName: string,
+): { apiKey?: string; auth?: Record<string, unknown>; extras?: Record<string, unknown> } | null {
+  const store = loadAuthProfileStore(VENA_DIR);
+  const profile = getAuthProfile(store, profileName);
+  if (!profile) return null;
+
+  switch (profile.type) {
+    case 'api_key':
+      return { apiKey: profile.key };
+
+    case 'oauth':
+      return {
+        auth: {
+          type: 'oauth_token',
+          oauthToken: profile.accessToken,
+          refreshToken: profile.refreshToken,
+          tokenUrl: profile.tokenUrl,
+          clientId: profile.clientId,
+          clientSecret: profile.clientSecret,
+          expiresAt: profile.expiresAt,
+        },
+      };
+
+    case 'token':
+      if (profile.token === '__cli__') {
+        return { extras: { transport: 'cli' } };
+      }
+      if (profile.token === '__local__') {
+        return {};
+      }
+      return { auth: { type: 'bearer_token', oauthToken: profile.token } };
+
+    default:
+      return null;
+  }
+}
+
 // ── Provider Factory ─────────────────────────────────────────────────
 
 export function createProvider(
   config: VenaConfig,
   overrideProvider?: string,
   overrideModel?: string,
+  agentConfig?: AgentConfig,
 ): { provider: LLMProvider; model: string; providerName: string } {
-  const providerName = overrideProvider ?? config.providers.default;
+  const providerName = overrideProvider ?? agentConfig?.provider ?? config.providers.default;
+
+  // Resolve auth from profile store if agent has an authProfile
+  let profileAuth: ReturnType<typeof resolveAuthFromProfile> = null;
+  if (agentConfig?.authProfile) {
+    profileAuth = resolveAuthFromProfile(agentConfig.authProfile);
+  }
 
   switch (providerName) {
     case 'anthropic': {
       const cfg = config.providers.anthropic;
-      if (!cfg?.apiKey && !cfg?.auth) {
+      const apiKey = profileAuth?.apiKey ?? cfg?.apiKey;
+      const auth = profileAuth?.auth ?? cfg?.auth;
+      if (!apiKey && !auth) {
         throw new Error('Anthropic not configured. Set providers.anthropic.apiKey or auth in ~/.vena/vena.json');
       }
-      const model = overrideModel ?? cfg?.model ?? 'claude-sonnet-4-5-20250929';
+      const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'claude-sonnet-4-5-20250929';
       return {
         provider: new AnthropicProvider({
-          apiKey: cfg?.apiKey,
+          apiKey,
           model,
           baseUrl: cfg?.baseUrl,
-          auth: cfg?.auth as any,
+          auth: auth as any,
         }),
         model,
         providerName,
@@ -69,16 +121,18 @@ export function createProvider(
 
     case 'openai': {
       const cfg = config.providers.openai;
-      if (!cfg?.apiKey && !cfg?.auth) {
+      const apiKey = profileAuth?.apiKey ?? cfg?.apiKey;
+      const auth = profileAuth?.auth ?? cfg?.auth;
+      if (!apiKey && !auth) {
         throw new Error('OpenAI not configured. Set providers.openai.apiKey or auth in ~/.vena/vena.json');
       }
-      const model = overrideModel ?? cfg?.model ?? 'gpt-4o';
+      const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'gpt-4o';
       return {
         provider: new OpenAIProvider({
-          apiKey: cfg?.apiKey,
+          apiKey,
           model,
           baseUrl: cfg?.baseUrl,
-          auth: cfg?.auth as any,
+          auth: auth as any,
         }),
         model,
         providerName,
@@ -87,23 +141,26 @@ export function createProvider(
 
     case 'gemini': {
       const cfg = config.providers.gemini;
-      if (cfg?.transport === 'cli') {
-        const model = overrideModel ?? cfg?.model ?? 'gemini-3-flash-preview';
+      const isCli = profileAuth?.extras?.transport === 'cli' || cfg?.transport === 'cli';
+      if (isCli) {
+        const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'gemini-3-flash-preview';
         return {
           provider: new GeminiCliProvider({ model }),
           model,
           providerName,
         };
       }
-      if (!cfg?.apiKey && !cfg?.auth) {
+      const apiKey = profileAuth?.apiKey ?? cfg?.apiKey;
+      const auth = profileAuth?.auth ?? cfg?.auth;
+      if (!apiKey && !auth) {
         throw new Error('Gemini not configured. Set providers.gemini.apiKey or auth in ~/.vena/vena.json');
       }
-      const model = overrideModel ?? cfg?.model ?? 'gemini-2.0-flash';
+      const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'gemini-2.0-flash';
       return {
         provider: new GeminiProvider({
-          apiKey: cfg?.apiKey,
+          apiKey,
           model,
-          auth: cfg?.auth as any,
+          auth: auth as any,
           vertexai: cfg?.vertexai,
           project: cfg?.project,
           location: cfg?.location,
@@ -116,7 +173,7 @@ export function createProvider(
 
     case 'ollama': {
       const cfg = config.providers.ollama;
-      const model = overrideModel ?? cfg?.model ?? 'llama3';
+      const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'llama3';
       return {
         provider: new OllamaProvider({
           baseUrl: cfg?.baseUrl,
