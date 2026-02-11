@@ -55,6 +55,14 @@ export const venaConfigSchema = z.object({
     }).optional(),
     groq: providerConfigSchema.optional(),
     openrouter: providerConfigSchema.optional(),
+    bedrock: z.object({
+      region: z.string().default('us-east-1'),
+      accessKeyId: z.string().optional(),
+      secretAccessKey: z.string().optional(),
+      sessionToken: z.string().optional(),
+      model: z.string().default('anthropic.claude-sonnet-4-5-20250929-v1:0'),
+      profile: z.string().optional(),
+    }).optional(),
   }),
 
   channels: z.object({

@@ -6,5 +6,6 @@ export { GeminiCliProvider, type GeminiCliProviderOptions } from './gemini-cli.j
 export { OllamaProvider } from './ollama.js';
 export { GroqProvider, type GroqProviderOptions } from './groq.js';
 export { OpenRouterProvider, type OpenRouterProviderOptions } from './openrouter.js';
+export { BedrockProvider, type BedrockProviderOptions } from './bedrock.js';
 export { collectStream, streamToText } from './streaming.js';
 export { resolveAuth, authHeaders, type TokenState } from './auth.js';

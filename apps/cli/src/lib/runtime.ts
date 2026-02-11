@@ -17,6 +17,7 @@ import {
   OllamaProvider,
   GroqProvider,
   OpenRouterProvider,
+  BedrockProvider,
 } from '@vena/providers';
 
 // ── Paths ────────────────────────────────────────────────────────────
@@ -214,7 +215,24 @@ export function createProvider(
       };
     }
 
+    case 'bedrock': {
+      const cfg = config.providers.bedrock;
+      const model = overrideModel ?? agentConfig?.model ?? cfg?.model ?? 'anthropic.claude-sonnet-4-5-20250929-v1:0';
+      return {
+        provider: new BedrockProvider({
+          region: cfg?.region,
+          accessKeyId: profileAuth?.apiKey ?? cfg?.accessKeyId,
+          secretAccessKey: cfg?.secretAccessKey,
+          sessionToken: cfg?.sessionToken,
+          model,
+          profile: cfg?.profile,
+        }),
+        model,
+        providerName,
+      };
+    }
+
     default:
-      throw new Error(`Unknown provider "${providerName}". Supported: anthropic, openai, gemini, ollama, groq, openrouter`);
+      throw new Error(`Unknown provider "${providerName}". Supported: anthropic, openai, gemini, ollama, groq, openrouter, bedrock`);
   }
 }
