@@ -97,8 +97,9 @@ export interface ToolProgress {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'tool_use' | 'tool_use_input' | 'stop' | 'error';
+  type: 'text' | 'tool_use' | 'tool_use_input' | 'stop' | 'error' | 'thinking';
   text?: string;
+  thinking?: string;
   toolUse?: {
     id: string;
     name: string;
@@ -106,6 +107,10 @@ export interface StreamChunk {
   toolInput?: string;
   stopReason?: 'end_turn' | 'tool_use' | 'max_tokens';
   error?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 }
 
 export interface ChatParams {
@@ -115,6 +120,10 @@ export interface ChatParams {
   maxTokens?: number;
   temperature?: number;
   stream?: boolean;
+  thinking?: {
+    type: 'enabled';
+    budgetTokens: number;
+  };
 }
 
 export interface ToolDefinition {

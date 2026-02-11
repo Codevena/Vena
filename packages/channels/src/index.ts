@@ -8,3 +8,6 @@ export { SlackChannel } from './slack/adapter.js';
 export type { SlackChannelOptions } from './slack/adapter.js';
 export { DiscordChannel } from './discord/adapter.js';
 export type { DiscordChannelOptions } from './discord/adapter.js';
+export { SignalChannel } from './signal/adapter.js';
+export type { SignalChannelOptions } from './signal/adapter.js';
+export { SignalMedia } from './signal/media.js';

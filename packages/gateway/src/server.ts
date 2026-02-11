@@ -9,6 +9,7 @@ import { openaiCompatAPI, type OpenAICompatOptions } from './api/openai-compat.j
 import { authMiddleware, type AuthConfig } from './middleware/auth.js';
 import { RateLimiter, type RateLimitConfig } from './middleware/rate-limit.js';
 import { registerDashboard, type DashboardData } from './dashboard.js';
+import { registerWebChat } from './webchat.js';
 
 const log = createLogger('gateway:server');
 
@@ -30,6 +31,16 @@ export interface GatewayConfig {
 
 type MessageHandler = (msg: InboundMessage) => Promise<{ text?: string }>;
 type AgentsProvider = () => Array<{ id: string; name: string; status: string }>;
+type UsageProvider = () => {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalEstimatedCost: number;
+  recordCount: number;
+  byAgent: Record<string, { inputTokens: number; outputTokens: number; estimatedCost: number; count: number }>;
+  byModel: Record<string, { inputTokens: number; outputTokens: number; estimatedCost: number; count: number }>;
+};
+type SendersProvider = () => Array<{ id: string; channelName: string; status: string; lastSeen: string }>;
+type SenderAction = (userId: string, channelName: string) => void;
 
 interface WebSocketMessage {
   type: 'message';
@@ -49,6 +60,10 @@ export class GatewayServer {
   private startedAt: Date;
   private messageHandler: MessageHandler | null = null;
   private agentsProvider: AgentsProvider | null = null;
+  private usageProvider: UsageProvider | null = null;
+  private sendersProvider: SendersProvider | null = null;
+  private approveSenderFn: SenderAction | null = null;
+  private blockSenderFn: SenderAction | null = null;
   private eventHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
 
   constructor(config: GatewayConfig) {
@@ -70,6 +85,16 @@ export class GatewayServer {
 
   onAgents(provider: AgentsProvider): void {
     this.agentsProvider = provider;
+  }
+
+  onUsage(provider: UsageProvider): void {
+    this.usageProvider = provider;
+  }
+
+  onSenders(provider: SendersProvider, approve: SenderAction, block: SenderAction): void {
+    this.sendersProvider = provider;
+    this.approveSenderFn = approve;
+    this.blockSenderFn = block;
   }
 
   on(event: string, handler: (...args: unknown[]) => void): void {
@@ -116,6 +141,20 @@ export class GatewayServer {
     // No recent activity tracking yet (could be wired later)
     const recentActivity: Array<{ timestamp: number; type: string; summary: string }> = [];
 
+    // Usage data
+    let usage: DashboardData['usage'] | undefined;
+    if (this.usageProvider) {
+      try {
+        const u = this.usageProvider();
+        usage = {
+          totalInputTokens: u.totalInputTokens,
+          totalOutputTokens: u.totalOutputTokens,
+          totalEstimatedCost: u.totalEstimatedCost,
+          recordCount: u.recordCount,
+        };
+      } catch { /* non-critical */ }
+    }
+
     return {
       uptime,
       version: '0.1.0',
@@ -127,6 +166,7 @@ export class GatewayServer {
         rss: mem.rss,
       },
       recentActivity,
+      usage,
     };
   }
 
@@ -140,7 +180,7 @@ export class GatewayServer {
     const authConfig: AuthConfig = {
       enabled: this.config.auth?.enabled ?? false,
       apiKeys: this.config.auth?.apiKeys ?? [],
-      excludePaths: ['/health', '/dashboard', '/dashboard/api/status', '/dashboard/api/agents', '/dashboard/api/cron', '/dashboard/api/memory'],
+      excludePaths: ['/health', '/chat', '/dashboard', '/dashboard/api/status', '/dashboard/api/agents', '/dashboard/api/cron', '/dashboard/api/memory'],
     };
     await this.fastify.register(authMiddleware(authConfig));
 
@@ -158,6 +198,9 @@ export class GatewayServer {
     // Register dashboard
     registerDashboard(this.fastify, () => this.getDashboardData());
 
+    // Register WebChat UI
+    registerWebChat(this.fastify);
+
     // Register control API
     const controlOpts: ControlAPIOptions = {
       sessionStore: this.sessionStore,
@@ -165,6 +208,10 @@ export class GatewayServer {
       startedAt: this.startedAt,
       onMessage: this.messageHandler ?? undefined,
       getAgents: this.agentsProvider ?? undefined,
+      getUsage: this.usageProvider ?? undefined,
+      getSenders: this.sendersProvider ?? undefined,
+      approveSender: this.approveSenderFn ?? undefined,
+      blockSender: this.blockSenderFn ?? undefined,
     };
     await this.fastify.register(controlAPI, controlOpts);
 

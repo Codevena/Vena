@@ -18,9 +18,11 @@ import { createLogger } from '@vena/shared';
 
 export type AgentEvent =
   | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string }
   | { type: 'tool_call'; tool: string; input: Record<string, unknown> }
   | { type: 'tool_progress'; tool: string; content: string; elapsed?: number }
   | { type: 'tool_result'; result: ToolResult }
+  | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'done'; response: string }
   | { type: 'error'; error: Error };
 
@@ -34,6 +36,10 @@ export interface AgentLoopOptions {
   memoryManager: MemoryManager;
   guard?: ToolGuard;
   workspacePath?: string;
+  thinking?: {
+    enabled: boolean;
+    budgetTokens: number;
+  };
   options?: {
     maxIterations?: number;
     maxTokens?: number;
@@ -63,6 +69,7 @@ export class AgentLoop {
   private maxTokens: number;
   private workspacePath: string;
   private streamTools: boolean;
+  private thinking?: { enabled: boolean; budgetTokens: number };
 
   constructor(opts: AgentLoopOptions) {
     this.provider = opts.provider;
@@ -75,6 +82,7 @@ export class AgentLoop {
     this.maxTokens = opts.options?.maxTokens ?? 4096;
     this.workspacePath = opts.workspacePath ?? process.cwd();
     this.streamTools = opts.options?.streamTools ?? true;
+    this.thinking = opts.thinking;
     this.toolExecutor = new ToolExecutor(opts.tools, opts.guard);
     this.contextBuilder = new ContextBuilder();
   }
@@ -114,17 +122,33 @@ export class AgentLoop {
       let stopReason: string | undefined;
 
       try {
-        for await (const chunk of this.provider.chat({
+        const chatParams: any = {
           messages: context.messages,
           systemPrompt: context.systemPrompt,
           tools: toolDefs,
           maxTokens: this.maxTokens,
-        })) {
+        };
+
+        // Pass thinking config to provider
+        if (this.thinking?.enabled) {
+          chatParams.thinking = {
+            type: 'enabled' as const,
+            budgetTokens: this.thinking.budgetTokens,
+          };
+        }
+
+        for await (const chunk of this.provider.chat(chatParams)) {
           switch (chunk.type) {
             case 'text':
               if (chunk.text) {
                 fullText += chunk.text;
                 yield { type: 'text', text: chunk.text };
+              }
+              break;
+
+            case 'thinking':
+              if (chunk.thinking) {
+                yield { type: 'thinking', thinking: chunk.thinking };
               }
               break;
 
@@ -155,6 +179,10 @@ export class AgentLoop {
               if (currentToolUse) {
                 contentBlocks.push(this.finalizeToolUse(currentToolUse));
                 currentToolUse = null;
+              }
+              // Emit usage data if present
+              if (chunk.usage) {
+                yield { type: 'usage', inputTokens: chunk.usage.inputTokens, outputTokens: chunk.usage.outputTokens };
               }
               break;
 

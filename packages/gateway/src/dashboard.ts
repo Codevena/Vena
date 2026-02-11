@@ -10,6 +10,12 @@ export interface DashboardData {
   cronJobs: Array<{ name: string; schedule: string; nextRun?: string; enabled: boolean }>;
   memory: { heapUsed: number; heapTotal: number; rss: number };
   recentActivity: Array<{ timestamp: number; type: string; summary: string }>;
+  usage?: {
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalEstimatedCost: number;
+    recordCount: number;
+  };
 }
 
 export function registerDashboard(
@@ -513,6 +519,32 @@ function getDashboardHTML(): string {
       </div>
     </div>
 
+    <!-- Usage -->
+    <div class="card fade-in" style="animation-delay: 0.25s;">
+      <div class="card-header">
+        <div class="card-title">Usage & Cost</div>
+        <div class="card-badge" id="usage-badge">--</div>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-item">
+          <div class="stat-label">Input Tokens</div>
+          <div class="stat-value" id="usage-input">--</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Output Tokens</div>
+          <div class="stat-value" id="usage-output">--</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Est. Cost</div>
+          <div class="stat-value" id="usage-cost">--</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Requests</div>
+          <div class="stat-value" id="usage-requests">--</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Recent Activity -->
     <div class="card fade-in" style="animation-delay: 0.3s;">
       <div class="card-header">
@@ -543,6 +575,12 @@ function getDashboardHTML(): string {
 
     function formatBytes(bytes) {
       return (bytes / (1024 * 1024)).toFixed(1);
+    }
+
+    function formatTokens(tokens) {
+      if (tokens >= 1000000) return (tokens / 1000000).toFixed(1) + 'M';
+      if (tokens >= 1000) return (tokens / 1000).toFixed(1) + 'K';
+      return String(tokens);
     }
 
     function formatTimestamp(timestamp) {
@@ -680,6 +718,15 @@ function getDashboardHTML(): string {
 
         // Update activity
         updateActivity(data.recentActivity);
+
+        // Update usage
+        if (data.usage) {
+          document.getElementById('usage-input').textContent = formatTokens(data.usage.totalInputTokens);
+          document.getElementById('usage-output').textContent = formatTokens(data.usage.totalOutputTokens);
+          document.getElementById('usage-cost').textContent = '$' + data.usage.totalEstimatedCost.toFixed(4);
+          document.getElementById('usage-requests').textContent = String(data.usage.recordCount);
+          document.getElementById('usage-badge').textContent = '$' + data.usage.totalEstimatedCost.toFixed(2);
+        }
 
         lastUpdateTime = Date.now();
       } catch (err) {

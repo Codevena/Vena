@@ -1222,6 +1222,7 @@ export const onboardCommand = new Command('onboard')
         auth: { enabled: false, apiKeys: [] },
         rateLimit: { enabled: true, windowMs: 60000, maxRequests: 120 },
         maxMessageSize: 102400,
+        senderApproval: { mode: 'open' },
       },
       agents: {
         defaults: { maxConcurrent: 4 },

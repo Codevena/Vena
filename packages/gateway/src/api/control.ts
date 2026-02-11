@@ -17,10 +17,21 @@ export interface ControlAPIOptions {
   startedAt: Date;
   onMessage?: (msg: InboundMessage) => Promise<{ text?: string }>;
   getAgents?: () => Array<{ id: string; name: string; status: string }>;
+  getUsage?: () => {
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalEstimatedCost: number;
+    recordCount: number;
+    byAgent: Record<string, { inputTokens: number; outputTokens: number; estimatedCost: number; count: number }>;
+    byModel: Record<string, { inputTokens: number; outputTokens: number; estimatedCost: number; count: number }>;
+  };
+  getSenders?: () => Array<{ id: string; channelName: string; status: string; lastSeen: string }>;
+  approveSender?: (userId: string, channelName: string) => void;
+  blockSender?: (userId: string, channelName: string) => void;
 }
 
 export async function controlAPI(fastify: FastifyInstance, options: ControlAPIOptions): Promise<void> {
-  const { sessionStore, laneQueue, startedAt, onMessage, getAgents } = options;
+  const { sessionStore, laneQueue, startedAt, onMessage, getAgents, getUsage, getSenders, approveSender, blockSender } = options;
 
   fastify.get('/api/status', async () => {
     const memUsage = process.memoryUsage();
@@ -85,5 +96,35 @@ export async function controlAPI(fastify: FastifyInstance, options: ControlAPIOp
     }
     sessionStore.delete(id);
     return { deleted: true, sessionKey: id };
+  });
+
+  // Usage tracking endpoint
+  fastify.get('/api/usage', async () => {
+    if (!getUsage) return { error: 'Usage tracking not enabled' };
+    return getUsage();
+  });
+
+  // Sender approval endpoints
+  fastify.get('/api/senders', async () => {
+    if (!getSenders) return { senders: [] };
+    return { senders: getSenders() };
+  });
+
+  fastify.post<{ Params: { id: string }; Body: { channel: string } }>('/api/senders/:id/approve', async (request, reply) => {
+    if (!approveSender) return reply.status(503).send({ error: 'Sender approval not enabled' });
+    const { id } = request.params;
+    const body = request.body as { channel?: string } | undefined;
+    const channel = body?.channel ?? 'unknown';
+    approveSender(id, channel);
+    return { approved: true, userId: id };
+  });
+
+  fastify.post<{ Params: { id: string }; Body: { channel: string } }>('/api/senders/:id/block', async (request, reply) => {
+    if (!blockSender) return reply.status(503).send({ error: 'Sender approval not enabled' });
+    const { id } = request.params;
+    const body = request.body as { channel?: string } | undefined;
+    const channel = body?.channel ?? 'unknown';
+    blockSender(id, channel);
+    return { blocked: true, userId: id };
   });
 }

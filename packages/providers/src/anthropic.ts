@@ -59,18 +59,37 @@ export class AnthropicProvider implements LLMProvider {
 
     try {
       const client = await this.ensureClient();
-      const stream = client.messages.stream({
+
+      const requestParams: Record<string, unknown> = {
         model: this.model,
         max_tokens: params.maxTokens ?? 4096,
         temperature: params.temperature,
         system: params.systemPrompt,
         messages,
         tools,
-      });
+      };
+
+      // Extended thinking support
+      if (params.thinking?.type === 'enabled') {
+        requestParams['thinking'] = {
+          type: 'enabled',
+          budget_tokens: params.thinking.budgetTokens,
+        };
+        // Anthropic requires temperature=1 when using thinking
+        delete requestParams['temperature'];
+      }
+
+      const stream = client.messages.stream(requestParams as any);
 
       for await (const event of stream) {
-        const chunk = this.mapStreamEvent(event);
-        if (chunk) yield chunk;
+        const chunks = this.mapStreamEvent(event);
+        if (chunks) {
+          if (Array.isArray(chunks)) {
+            for (const chunk of chunks) yield chunk;
+          } else {
+            yield chunks;
+          }
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -160,7 +179,7 @@ export class AnthropicProvider implements LLMProvider {
     }));
   }
 
-  private mapStreamEvent(event: Anthropic.MessageStreamEvent): StreamChunk | null {
+  private mapStreamEvent(event: Anthropic.MessageStreamEvent): StreamChunk | StreamChunk[] | null {
     switch (event.type) {
       case 'content_block_start':
         if (event.content_block.type === 'tool_use') {
@@ -172,6 +191,10 @@ export class AnthropicProvider implements LLMProvider {
             },
           };
         }
+        // Extended thinking block start
+        if ((event.content_block as any).type === 'thinking') {
+          return null; // Content comes via deltas
+        }
         return null;
 
       case 'content_block_delta':
@@ -181,12 +204,32 @@ export class AnthropicProvider implements LLMProvider {
         if (event.delta.type === 'input_json_delta') {
           return { type: 'tool_use_input', toolInput: event.delta.partial_json };
         }
+        // Extended thinking delta
+        if ((event.delta as any).type === 'thinking_delta') {
+          return { type: 'thinking', thinking: (event.delta as any).thinking };
+        }
         return null;
 
       case 'message_stop':
         return null;
 
-      case 'message_delta':
+      case 'message_delta': {
+        const chunks: StreamChunk[] = [];
+
+        // Extract usage data from message_delta
+        const usage = (event as any).usage;
+        if (usage) {
+          chunks.push({
+            type: 'stop',
+            stopReason: event.delta.stop_reason ? this.mapStopReason(event.delta.stop_reason) : undefined,
+            usage: {
+              inputTokens: usage.input_tokens ?? 0,
+              outputTokens: usage.output_tokens ?? 0,
+            },
+          });
+          return chunks.length === 1 ? chunks[0]! : chunks;
+        }
+
         if (event.delta.stop_reason) {
           return {
             type: 'stop',
@@ -194,6 +237,7 @@ export class AnthropicProvider implements LLMProvider {
           };
         }
         return null;
+      }
 
       default:
         return null;

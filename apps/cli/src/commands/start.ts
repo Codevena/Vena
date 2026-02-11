@@ -6,8 +6,8 @@ import type { VenaConfig, InboundMessage, Message, Session, OutboundMessage, Med
 import { createLogger } from '@vena/shared';
 import type { Tool } from '@vena/shared';
 import { GatewayServer } from '@vena/gateway';
-import { TelegramChannel } from '@vena/channels';
-import { WhatsAppChannel } from '@vena/channels';
+import { TelegramChannel, WhatsAppChannel, SlackChannel, DiscordChannel, SignalChannel } from '@vena/channels';
+import type { Channel } from '@vena/channels';
 import {
   AgentLoop,
   MemoryManager,
@@ -21,9 +21,15 @@ import {
   ToolGuard,
   ConsultTool,
   DelegateTool,
+  CronTool,
+  SessionTool,
+  MessageTool,
+  ImageTool,
+  UsageTracker,
 } from '@vena/core';
 import type { BrowserAdapter, GoogleAdapters } from '@vena/core';
 import type { SecurityPolicy, SemanticMemoryProvider } from '@vena/core';
+import { SenderApproval } from '@vena/gateway';
 import { MemoryEngine } from '@vena/semantic-memory';
 import type { LLMProvider } from '@vena/providers';
 import { VoiceMessagePipeline, TextToSpeech, SpeechToText } from '@vena/voice';
@@ -191,6 +197,15 @@ async function showBootSequence(config: VenaConfig, results: BootResults): Promi
   if (results.whatsappConnected) {
     await spinnerLine('Connecting WhatsApp...', 300);
   }
+  if (results.slackConnected) {
+    await spinnerLine('Connecting Slack...', 300);
+  }
+  if (results.discordConnected) {
+    await spinnerLine('Connecting Discord...', 300);
+  }
+  if (results.signalConnected) {
+    await spinnerLine('Connecting Signal...', 300);
+  }
   if (results.semanticMemoryActive) {
     await spinnerLine('Knowledge Graph online...', 300);
   }
@@ -205,6 +220,9 @@ async function showBootSequence(config: VenaConfig, results: BootResults): Promi
   }
   if (results.cronJobs > 0) {
     await spinnerLine(`${results.cronJobs} cron job(s) scheduled...`, 200);
+  }
+  if (results.usageEnabled) {
+    await spinnerLine('Usage tracking active...', 200);
   }
 
   for (const name of results.agentNames) {
@@ -224,6 +242,9 @@ async function showBootSequence(config: VenaConfig, results: BootResults): Promi
 interface BootResults {
   telegramConnected: boolean;
   whatsappConnected: boolean;
+  slackConnected: boolean;
+  discordConnected: boolean;
+  signalConnected: boolean;
   gatewayPort: number;
   gatewayHost: string;
   providerName: string;
@@ -236,15 +257,20 @@ interface BootResults {
   agentNames: string[];
   hookCount: number;
   cronJobs: number;
+  usageEnabled: boolean;
+  senderApprovalMode: string;
 }
 
 function showDashboard(config: VenaConfig, results: BootResults): void {
   const agentCount = results.agentNames.length;
   const agentName = results.agentNames[0] ?? 'Vena';
 
-  const enabledChannels: string[] = ['HTTP', 'WebSocket'];
+  const enabledChannels: string[] = ['HTTP', 'WebSocket', 'WebChat'];
   if (results.telegramConnected) enabledChannels.push('Telegram');
   if (results.whatsappConnected) enabledChannels.push('WhatsApp');
+  if (results.slackConnected) enabledChannels.push('Slack');
+  if (results.discordConnected) enabledChannels.push('Discord');
+  if (results.signalConnected) enabledChannels.push('Signal');
 
   const features: string[] = [];
   if (results.semanticMemoryActive) features.push('KnowledgeGraph');
@@ -254,6 +280,8 @@ function showDashboard(config: VenaConfig, results: BootResults): void {
   if (agentCount > 1) features.push('MeshNetwork');
   if (results.hookCount > 0) features.push(`${results.hookCount} Hooks`);
   if (results.cronJobs > 0) features.push(`${results.cronJobs} Cron`);
+  if (results.usageEnabled) features.push('UsageTracking');
+  if (results.senderApprovalMode !== 'open') features.push(`DM:${results.senderApprovalMode}`);
 
   const dashLines = [
     colors.secondary(chalk.bold('VENA AGENT PLATFORM')),
@@ -302,6 +330,7 @@ function showDashboard(config: VenaConfig, results: BootResults): void {
   console.log(`  ${colors.dim('OpenAI:')}       ${colors.white(`http://${results.gatewayHost}:${results.gatewayPort}/v1/chat/completions`)}`);
   console.log(`  ${colors.dim('WebSocket:')}    ${colors.white(`ws://${results.gatewayHost}:${results.gatewayPort}`)}`);
   console.log(`  ${colors.dim('Status:')}       ${colors.white(`http://${results.gatewayHost}:${results.gatewayPort}/api/status`)}`);
+  console.log(`  ${colors.dim('WebChat:')}      ${colors.white(`http://${results.gatewayHost}:${results.gatewayPort}/chat`)}`);
   console.log();
 
   const width = getTerminalWidth();
@@ -558,6 +587,18 @@ export const startCommand = new Command('start')
       log.warn({ error: err }, 'Failed to start cron service (non-critical)');
     }
 
+    // ── Usage Tracker ─────────────────────────────────────────────────
+    const usageTracker = new UsageTracker(DATA_DIR);
+
+    // ── Sender Approval ──────────────────────────────────────────────
+    const senderApproval = new SenderApproval({
+      mode: config.gateway.senderApproval.mode,
+      dataDir: DATA_DIR,
+    });
+
+    // ── Connected Channels Map (for Message Tool) ────────────────────
+    const connectedChannels = new Map<string, { channel: any; connected: boolean }>();
+
     // ── Build Tools + Security Guard ─────────────────────────────────
     function buildToolsForTrust(trustLevel: 'full' | 'limited' | 'readonly'): { tools: Tool[]; guard: ToolGuard } {
       const securityPolicy: SecurityPolicy = {
@@ -602,6 +643,79 @@ export const startCommand = new Command('start')
 
       if (googleAdapters) {
         tools.push(new GoogleTool(googleAdapters));
+      }
+
+      // Cron tool (full trust only)
+      if (trustLevel === 'full') {
+        tools.push(new CronTool({
+          list: () => cronService.listJobs().map(j => ({
+            id: j.id,
+            name: j.name,
+            schedule: j.schedule.kind === 'cron' ? j.schedule.expr : j.schedule.kind === 'at' ? `at ${j.schedule.at}` : `every ${j.schedule.everyMs}ms`,
+            enabled: j.enabled,
+            nextRun: j.state.nextRunAtMs ? new Date(j.state.nextRunAtMs).toISOString() : undefined,
+          })),
+          add: async (name, schedule, message, agentId) => {
+            const job = await cronService.addJob({
+              name,
+              schedule: { kind: 'cron', expr: schedule },
+              payload: { kind: 'agentTurn', message },
+              agentId,
+              enabled: true,
+              sessionTarget: 'main',
+              wakeMode: 'now',
+            });
+            return job.id;
+          },
+          remove: async (jobId) => cronService.removeJob(jobId),
+          enable: async (jobId) => {
+            const result = await cronService.updateJob(jobId, { enabled: true });
+            return !!result;
+          },
+          disable: async (jobId) => {
+            const result = await cronService.updateJob(jobId, { enabled: false });
+            return !!result;
+          },
+        }));
+      }
+
+      // Session tool
+      tools.push(new SessionTool({
+        list: () => Array.from(sessions.entries()).map(([key, s]) => ({
+          sessionKey: key,
+          channelName: s.channelName,
+          agentId: s.metadata.agentId,
+          messageCount: s.messages.length,
+          updatedAt: s.updatedAt,
+        })),
+        get: (key) => sessions.get(key),
+        clear: (key) => sessions.delete(key),
+      }));
+
+      // Message tool (for proactive outbound messages)
+      if (trustLevel !== 'readonly') {
+        tools.push(new MessageTool({
+          listChannels: () => Array.from(connectedChannels.entries()).map(([name, c]) => ({
+            name,
+            connected: c.connected,
+          })),
+          send: async (channelName, sessionKey, content) => {
+            const entry = connectedChannels.get(channelName);
+            if (!entry || !entry.connected) {
+              throw new Error(`Channel "${channelName}" not connected`);
+            }
+            await entry.channel.send(sessionKey, content);
+          },
+        }));
+      }
+
+      // Image tool
+      if (config.image?.apiKey) {
+        tools.push(new ImageTool({
+          provider: config.image.provider ?? 'openai',
+          model: config.image.model ?? 'dall-e-3',
+          apiKey: config.image.apiKey,
+        }));
       }
 
       return { tools, guard };
@@ -789,6 +903,10 @@ export const startCommand = new Command('start')
         memoryManager: mm,
         guard,
         workspacePath: DATA_DIR,
+        thinking: agentConfig.thinking?.enabled ? {
+          enabled: true,
+          budgetTokens: agentConfig.thinking.budgetTokens ?? 10000,
+        } : undefined,
         options: {
           maxIterations: 10,
           maxTokens: 4096,
@@ -962,6 +1080,18 @@ export const startCommand = new Command('start')
             case 'text':
               responseText += event.text;
               break;
+            case 'usage':
+              usageTracker.record({
+                agentId: targetAgentId,
+                sessionKey: inbound.sessionKey,
+                model: agentProviderNames.get(targetAgentId) === 'anthropic'
+                  ? (registry.find(a => a.id === targetAgentId)?.model ?? modelName)
+                  : modelName,
+                provider: agentProviderNames.get(targetAgentId) ?? providerName,
+                inputTokens: event.inputTokens,
+                outputTokens: event.outputTokens,
+              });
+              break;
             case 'done':
               responseText = event.response || responseText;
               break;
@@ -1002,11 +1132,32 @@ export const startCommand = new Command('start')
       return { text: responseText };
     }
 
-    // Voice-aware channel handler: wraps handleMessage with STT/TTS
+    // Voice-aware channel handler: wraps handleMessage with STT/TTS + sender approval
     async function handleChannelMessage(
       inbound: InboundMessage,
       sendFn: (sessionKey: string, content: OutboundMessage) => Promise<void>,
     ): Promise<void> {
+      // Sender approval check
+      if (!senderApproval.isApproved(inbound.userId, inbound.channelName)) {
+        const mode = senderApproval.getMode();
+        if (mode === 'pairing') {
+          const code = senderApproval.generatePairingCode(inbound.userId, inbound.channelName);
+
+          // Check if the message contains a pairing code
+          if (inbound.content.trim().length === 6 && /^[A-Z0-9]+$/.test(inbound.content.trim().toUpperCase())) {
+            if (senderApproval.verifyPairingCode(inbound.userId, inbound.channelName, inbound.content.trim())) {
+              await sendFn(inbound.sessionKey, { text: 'Pairing successful! You can now send messages.' });
+              return;
+            }
+          }
+
+          await sendFn(inbound.sessionKey, { text: `Please enter your pairing code to start chatting. Your code: ${code}` });
+        } else {
+          await sendFn(inbound.sessionKey, { text: 'You are not authorized to send messages.' });
+        }
+        return;
+      }
+
       const response = await handleMessage(inbound);
       const outbound: OutboundMessage = { text: response.text };
 
@@ -1052,6 +1203,12 @@ export const startCommand = new Command('start')
         status: 'active',
       })),
     );
+    gateway.onUsage(() => usageTracker.getSummary());
+    gateway.onSenders(
+      () => senderApproval.listSenders(),
+      (userId, channel) => senderApproval.approve(userId, channel),
+      (userId, channel) => senderApproval.block(userId, channel),
+    );
 
     try {
       await gateway.start();
@@ -1065,51 +1222,84 @@ export const startCommand = new Command('start')
       process.exit(1);
     }
 
-    // ── Connect Channels ────────────────────────────────────────────
+    // ── Connect Channels (Registry Pattern) ────────────────────────
     const channels: Array<{ name: string; disconnect: () => Promise<void> }> = [];
     let telegramConnected = false;
     let whatsappConnected = false;
+    let slackConnected = false;
+    let discordConnected = false;
+    let signalConnected = false;
+
+    async function connectChannel(name: string, createFn: () => Channel): Promise<boolean> {
+      try {
+        const channel = createFn();
+        channel.onMessage(async (inbound) => {
+          await handleChannelMessage(inbound, (key, content) => channel.send(key, content));
+        });
+        await channel.connect();
+        channels.push({ name, disconnect: () => channel.disconnect() });
+        connectedChannels.set(name, { channel, connected: true });
+        log.info(`${name} channel connected`);
+        return true;
+      } catch (err) {
+        log.error({ error: err }, `Failed to connect ${name}`);
+        return false;
+      }
+    }
 
     // Telegram
     if (config.channels.telegram?.enabled && config.channels.telegram?.token) {
-      try {
-        const telegram = new TelegramChannel(config.channels.telegram.token);
-        telegram.onMessage(async (inbound) => {
-          await handleChannelMessage(inbound, (key, content) => telegram.send(key, content));
-        });
-        await telegram.connect();
-        channels.push({ name: 'telegram', disconnect: () => telegram.disconnect() });
-        telegramConnected = true;
-        log.info('Telegram channel connected');
-      } catch (err) {
-        log.error({ error: err }, 'Failed to connect Telegram');
-      }
+      telegramConnected = await connectChannel('telegram', () =>
+        new TelegramChannel(config.channels.telegram!.token!),
+      );
     }
 
     // WhatsApp
     if (config.channels.whatsapp?.enabled) {
-      try {
-        fs.mkdirSync(WHATSAPP_AUTH_DIR, { recursive: true });
-        const whatsapp = new WhatsAppChannel({
-          authDir: WHATSAPP_AUTH_DIR,
-          printQRInTerminal: true,
-        });
-        whatsapp.onMessage(async (inbound) => {
-          await handleChannelMessage(inbound, (key, content) => whatsapp.send(key, content));
-        });
-        await whatsapp.connect();
-        channels.push({ name: 'whatsapp', disconnect: () => whatsapp.disconnect() });
-        whatsappConnected = true;
-        log.info('WhatsApp channel connected');
-      } catch (err) {
-        log.error({ error: err }, 'Failed to connect WhatsApp');
-      }
+      fs.mkdirSync(WHATSAPP_AUTH_DIR, { recursive: true });
+      whatsappConnected = await connectChannel('whatsapp', () =>
+        new WhatsAppChannel({ authDir: WHATSAPP_AUTH_DIR, printQRInTerminal: true }),
+      );
+    }
+
+    // Slack
+    if (config.channels.slack?.enabled && config.channels.slack?.token && config.channels.slack?.signingSecret) {
+      slackConnected = await connectChannel('slack', () =>
+        new SlackChannel({
+          token: config.channels.slack!.token!,
+          signingSecret: config.channels.slack!.signingSecret!,
+          appToken: config.channels.slack!.appToken,
+        }),
+      );
+    }
+
+    // Discord
+    if (config.channels.discord?.enabled && config.channels.discord?.token && config.channels.discord?.applicationId) {
+      discordConnected = await connectChannel('discord', () =>
+        new DiscordChannel({
+          token: config.channels.discord!.token!,
+          applicationId: config.channels.discord!.applicationId!,
+        }),
+      );
+    }
+
+    // Signal
+    if (config.channels.signal?.enabled && config.channels.signal?.apiUrl && config.channels.signal?.phoneNumber) {
+      signalConnected = await connectChannel('signal', () =>
+        new SignalChannel({
+          apiUrl: config.channels.signal!.apiUrl!,
+          phoneNumber: config.channels.signal!.phoneNumber!,
+        }),
+      );
     }
 
     // ── Boot Sequence + Dashboard ───────────────────────────────────
     const bootResults: BootResults = {
       telegramConnected,
       whatsappConnected,
+      slackConnected,
+      discordConnected,
+      signalConnected,
       gatewayPort,
       gatewayHost,
       providerName,
@@ -1122,6 +1312,8 @@ export const startCommand = new Command('start')
       agentNames: registry.map(a => a.name),
       hookCount,
       cronJobs: cronService.listJobs().filter(j => j.enabled).length,
+      usageEnabled: true,
+      senderApprovalMode: config.gateway.senderApproval.mode,
     };
 
     await showBootSequence(config, bootResults);
@@ -1158,6 +1350,14 @@ export const startCommand = new Command('start')
 
       // Hook: gateway stopping
       await triggerHook(createHookEvent('gateway', 'stop', 'system', {})).catch(() => {});
+
+      // Stop usage tracker
+      try {
+        usageTracker.stop();
+        console.log(`  ${colors.dim('●')} Usage tracker saved`);
+      } catch {
+        // Non-critical
+      }
 
       // Clear pending consultations and delegations
       if (consultationManager || delegationManager) {

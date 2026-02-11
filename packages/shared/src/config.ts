@@ -41,6 +41,10 @@ const agentConfigSchema = z.object({
   voiceId: z.string().optional(),
   character: z.string().default('nova'),
   authProfile: z.string().optional(),
+  thinking: z.object({
+    enabled: z.boolean().default(false),
+    budgetTokens: z.number().default(10000),
+  }).optional(),
 });
 
 export const venaConfigSchema = z.object({
@@ -84,6 +88,11 @@ export const venaConfigSchema = z.object({
       token: z.string().optional(),
       applicationId: z.string().optional(),
     }).optional(),
+    signal: z.object({
+      enabled: z.boolean().default(false),
+      apiUrl: z.string().optional(),
+      phoneNumber: z.string().optional(),
+    }).optional(),
   }).default({}),
 
   gateway: z.object({
@@ -99,6 +108,9 @@ export const venaConfigSchema = z.object({
       maxRequests: z.number().default(120),
     }).default({}),
     maxMessageSize: z.number().default(102400),
+    senderApproval: z.object({
+      mode: z.enum(['open', 'pairing', 'allowlist']).default('open'),
+    }).default({}),
   }).default({}),
 
   agents: z.object({
@@ -202,6 +214,12 @@ export const venaConfigSchema = z.object({
     clientId: z.string().optional(),
     clientSecret: z.string().optional(),
     scopes: z.array(z.string()).default(['gmail', 'docs', 'sheets', 'calendar', 'drive']),
+  }).optional(),
+
+  image: z.object({
+    provider: z.enum(['openai', 'stability']).default('openai'),
+    model: z.string().default('dall-e-3'),
+    apiKey: z.string().optional(),
   }).optional(),
 
   skills: z.object({
