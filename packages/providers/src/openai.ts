@@ -69,11 +69,21 @@ export class OpenAIProvider implements LLMProvider {
         messages,
         tools,
         stream: true,
+        stream_options: { include_usage: true },
       });
 
       const toolCalls = new Map<number, { id: string; name: string; args: string }>();
+      let usageData: { inputTokens: number; outputTokens: number } | undefined;
 
       for await (const chunk of stream) {
+        // Check for usage data (OpenAI sends it in the final chunk)
+        if (chunk.usage) {
+          usageData = {
+            inputTokens: chunk.usage.prompt_tokens,
+            outputTokens: chunk.usage.completion_tokens,
+          };
+        }
+
         const choice = chunk.choices[0];
         if (!choice) continue;
 
@@ -122,6 +132,7 @@ export class OpenAIProvider implements LLMProvider {
           yield {
             type: 'stop',
             stopReason: this.mapFinishReason(choice.finish_reason),
+            usage: usageData,
           };
         }
       }

@@ -234,18 +234,125 @@ export function renderMarkdown(text: string): string {
   }
 }
 
+// ── Thinking Indicator ───────────────────────────────────────────────
+
+const THINKING_SYMBOL = '\u27E1'; // ⟡
+
+export function createThinkingIndicator(): {
+  start(): void;
+  update(preview?: string): void;
+  stop(): string;
+} {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let colorIndex = 0;
+  let startMs = 0;
+  let currentPreview = '';
+
+  function render(): void {
+    const color = GRADIENT[colorIndex % GRADIENT.length]!;
+    colorIndex++;
+    const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
+    let line = `  ${color(THINKING_SYMBOL)} ${colors.dim('Thinking...')} ${colors.dim(elapsed + 's')}`;
+    if (currentPreview) {
+      const trimmed = currentPreview.slice(0, 80).replace(/\n/g, ' ');
+      line += `\n  ${colors.dim(trimmed)}`;
+    }
+    // Clear current line(s) and rewrite
+    const lineCount = currentPreview ? 2 : 1;
+    process.stdout.write(`\x1B[${lineCount}A\x1B[0J` + line + '\n');
+  }
+
+  return {
+    start() {
+      startMs = Date.now();
+      colorIndex = 0;
+      currentPreview = '';
+      // Print initial placeholder line so cursor-up works
+      process.stdout.write(`  ${GRADIENT[0]!(THINKING_SYMBOL)} ${colors.dim('Thinking...')} ${colors.dim('0.0s')}\n`);
+      timer = setInterval(render, 150);
+    },
+
+    update(preview?: string) {
+      if (preview !== undefined) {
+        // If switching from no-preview to preview, add an extra line for cursor math
+        if (!currentPreview && preview) {
+          process.stdout.write('\n');
+        }
+        currentPreview = preview;
+      }
+    },
+
+    stop(): string {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
+      // Erase the thinking indicator line(s)
+      const lineCount = currentPreview ? 2 : 1;
+      process.stdout.write(`\x1B[${lineCount}A\x1B[0J`);
+      currentPreview = '';
+      return `${elapsed}s`;
+    },
+  };
+}
+
+// ── Token / Cost Formatting ──────────────────────────────────────────
+
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+export function formatCost(usd: number): string {
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(4)}`;
+}
+
+export function renderTurnFooter(opts: {
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  elapsed: string;
+}): string {
+  const inTok = formatTokenCount(opts.inputTokens);
+  const outTok = formatTokenCount(opts.outputTokens);
+  const cost = formatCost(opts.cost);
+  return colors.dim(`    ${inTok} in ${colors.dim('\u00b7')} ${outTok} out  \u2500  ~${cost}  \u2500  ${opts.elapsed}`);
+}
+
+// ── Response Framing ─────────────────────────────────────────────────
+
+export function renderAgentHeader(name: string, elapsed: string): string {
+  return `\n  ${colors.secondary('\u25C6')} ${colors.secondary(name)}  ${colors.dim(elapsed)}`;
+}
+
+export function renderTurnSeparator(): string {
+  return colors.dim('  ' + '\u2500'.repeat(40));
+}
+
+export function renderUserPrompt(): string {
+  return colors.primary('  \u276F ');
+}
+
 // ── Tool Call/Result Rendering ────────────────────────────────────────
 
 const TOOL_ICONS: Record<string, string> = {
-  bash: '$',
-  read: 'R',
-  write: 'W',
-  edit: 'E',
-  web_browse: 'G',
-  browser: 'B',
-  google: 'G',
-  consult_agent: 'C',
-  delegate_task: 'D',
+  bash: '\u2318',         // ⌘
+  read: '\u25C9',         // ◉
+  write: '\u270E',        // ✎
+  edit: '\u270F',         // ✏
+  web_browse: '\u25CE',   // ◎
+  browser: '\u229E',      // ⊞
+  google: '\u2726',       // ✦
+  consult_agent: '\u21C4', // ⇄
+  delegate_task: '\u2197', // ↗
+  cron: '\u23F2',         // ⏲
+  image: '\u25D0',        // ◐
+  message: '\u2709',      // ✉
+  session: '\u2299',      // ⊙
 };
 
 function getToolArg(toolName: string, args: Record<string, unknown>): string {
@@ -273,28 +380,30 @@ function getToolArg(toolName: string, args: Record<string, unknown>): string {
 export function renderToolCall(toolName: string, args: Record<string, unknown>): string {
   const icon = TOOL_ICONS[toolName] ?? '?';
   const arg = getToolArg(toolName, args);
-  return `  ${colors.dim('[')}${colors.secondary(icon)}${colors.dim(']')} ${colors.white(toolName)} ${colors.dim(arg)}`;
+  const argDisplay = arg ? ` ${colors.dim('\u2500')} ${colors.dim(arg)}` : '';
+  return `  ${colors.secondary(icon)} ${colors.white(toolName)}${argDisplay}`;
 }
 
 export function renderToolResult(result: { content: string; isError?: boolean }, toolName: string): string {
   if (result.isError) {
     const errMsg = result.content.split('\n')[0]?.slice(0, 80) ?? 'Unknown error';
-    return `  ${colors.error('✗')} ${colors.white(toolName)} ${colors.error(errMsg)}`;
+    return `  ${colors.error('\u2717')} ${colors.white(toolName)} ${colors.error(errMsg)}`;
   }
 
   const lines = result.content.split('\n');
-  const maxLines = 6;
+  const maxLines = 3;
   const maxChars = 80;
 
   const preview = lines
     .slice(0, maxLines)
     .map(l => (l.length > maxChars ? l.slice(0, maxChars) + '...' : l))
-    .map(l => `  ${colors.dim(l)}`)
+    .map(l => `    ${colors.dim(l)}`)
     .join('\n');
 
-  const more = lines.length > maxLines ? `\n  ${colors.dim(`... ${lines.length - maxLines} more lines`)}` : '';
+  const remaining = lines.length - maxLines;
+  const more = remaining > 0 ? `\n    ${colors.dim(`... +${remaining} lines`)}` : '';
 
-  return `  ${colors.success('✓')} ${colors.white(toolName)}${preview ? '\n' + preview : ''}${more}`;
+  return `  ${colors.success('\u25B8')} ${colors.white(toolName)}${preview ? '\n' + preview : ''}${more}`;
 }
 
 // ── Elapsed Time ──────────────────────────────────────────────────────
@@ -302,4 +411,14 @@ export function renderToolResult(result: { content: string; isError?: boolean },
 export function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// ── Indent Helper ────────────────────────────────────────────────────
+
+export function indentText(text: string, spaces = 4): string {
+  const indent = ' '.repeat(spaces);
+  return text
+    .split('\n')
+    .map(line => indent + line)
+    .join('\n');
 }

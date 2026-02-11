@@ -7,4 +7,5 @@ export interface Channel {
   onMessage(handler: (msg: InboundMessage) => Promise<void>): void;
   send(sessionKey: string, content: OutboundMessage): Promise<void>;
   getSessionKey(raw: unknown): string;
+  onDisconnect?(handler: (error?: Error) => void): void;
 }

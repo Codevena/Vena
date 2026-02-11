@@ -14,6 +14,7 @@ import { ToolExecutor } from './tool-executor.js';
 import { ContextBuilder } from './context-builder.js';
 import type { MemoryManager } from '../memory/memory-manager.js';
 import type { ToolGuard } from '../security/tool-guard.js';
+import type { UsageTracker } from './usage-tracker.js';
 import { createLogger } from '@vena/shared';
 
 export type AgentEvent =
@@ -36,6 +37,8 @@ export interface AgentLoopOptions {
   memoryManager: MemoryManager;
   guard?: ToolGuard;
   workspacePath?: string;
+  usageTracker?: UsageTracker;
+  agentId?: string;
   thinking?: {
     enabled: boolean;
     budgetTokens: number;
@@ -70,6 +73,8 @@ export class AgentLoop {
   private workspacePath: string;
   private streamTools: boolean;
   private thinking?: { enabled: boolean; budgetTokens: number };
+  private usageTracker?: UsageTracker;
+  private agentId?: string;
 
   constructor(opts: AgentLoopOptions) {
     this.provider = opts.provider;
@@ -83,6 +88,8 @@ export class AgentLoop {
     this.workspacePath = opts.workspacePath ?? process.cwd();
     this.streamTools = opts.options?.streamTools ?? true;
     this.thinking = opts.thinking;
+    this.usageTracker = opts.usageTracker;
+    this.agentId = opts.agentId;
     this.toolExecutor = new ToolExecutor(opts.tools, opts.guard);
     this.contextBuilder = new ContextBuilder();
   }
@@ -99,6 +106,18 @@ export class AgentLoop {
 
     while (iterations < this.maxIterations) {
       iterations++;
+
+      // Budget check before each LLM call
+      if (this.usageTracker && this.agentId) {
+        const budgetCheck = this.usageTracker.checkBudget(this.agentId, session.sessionKey);
+        if (!budgetCheck.allowed) {
+          yield { type: 'error', error: new Error(`Budget exceeded: ${budgetCheck.reason}`) };
+          return;
+        }
+        if (budgetCheck.warning) {
+          logger.warn({ agent: this.agentId, percent: budgetCheck.usagePercent }, budgetCheck.warning);
+        }
+      }
 
       const memoryContext = await this.memoryManager.getRelevantContext(
         typeof message.content === 'string' ? message.content : '',

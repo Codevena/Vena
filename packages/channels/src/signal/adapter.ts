@@ -35,11 +35,13 @@ interface SignalEnvelope {
 export class SignalChannel implements Channel {
   public readonly name = 'signal';
   private messageHandler?: (msg: InboundMessage) => Promise<void>;
+  private disconnectHandler?: (error?: Error) => void;
   private logger = createLogger('channels:signal');
   private options: SignalChannelOptions;
   private media: SignalMedia;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private connected = false;
+  private consecutivePollErrors = 0;
 
   constructor(options: SignalChannelOptions) {
     this.options = options;
@@ -63,6 +65,7 @@ export class SignalChannel implements Channel {
     this.connected = true;
     const intervalMs = this.options.pollIntervalMs ?? 1000;
 
+    this.consecutivePollErrors = 0;
     this.pollTimer = setInterval(() => {
       this.poll().catch((err) => {
         this.logger.error({ error: err }, 'Signal poll error');
@@ -83,6 +86,10 @@ export class SignalChannel implements Channel {
 
   onMessage(handler: (msg: InboundMessage) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  onDisconnect(handler: (error?: Error) => void): void {
+    this.disconnectHandler = handler;
   }
 
   async send(sessionKey: string, content: OutboundMessage): Promise<void> {
@@ -143,6 +150,8 @@ export class SignalChannel implements Channel {
 
       if (!resp.ok) return;
 
+      this.consecutivePollErrors = 0;
+
       const envelopes = (await resp.json()) as SignalEnvelope[];
       if (!Array.isArray(envelopes)) return;
 
@@ -190,8 +199,17 @@ export class SignalChannel implements Channel {
           this.logger.error({ error: err, source }, 'Error processing Signal message');
         }
       }
-    } catch {
-      // Network errors during polling are expected occasionally
+    } catch (error) {
+      this.consecutivePollErrors++;
+      if (this.consecutivePollErrors >= 3) {
+        const err = error instanceof Error ? error : new Error('Signal API unreachable');
+        this.connected = false;
+        if (this.pollTimer) {
+          clearInterval(this.pollTimer);
+          this.pollTimer = null;
+        }
+        this.disconnectHandler?.(err);
+      }
     }
   }
 

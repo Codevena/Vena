@@ -110,8 +110,17 @@ export class GeminiProvider implements LLMProvider {
       });
 
       let hasToolCalls = false;
+      let usageData: { inputTokens: number; outputTokens: number } | undefined;
 
       for await (const chunk of response) {
+        // Check for usage metadata
+        if (chunk.usageMetadata) {
+          usageData = {
+            inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
+            outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
+          };
+        }
+
         if (!chunk.candidates?.[0]) continue;
 
         const candidate = chunk.candidates[0];
@@ -145,6 +154,7 @@ export class GeminiProvider implements LLMProvider {
           yield {
             type: 'stop',
             stopReason: hasToolCalls ? 'tool_use' : this.mapFinishReason(candidate.finishReason),
+            usage: usageData,
           };
         }
       }

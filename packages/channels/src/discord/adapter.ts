@@ -12,6 +12,7 @@ export class DiscordChannel implements Channel {
   public readonly name = 'discord';
   private client: Client | null = null;
   private messageHandler?: (msg: InboundMessage) => Promise<void>;
+  private disconnectHandler?: (error?: Error) => void;
   private logger = createLogger('channels:discord');
   private options: DiscordChannelOptions;
 
@@ -47,6 +48,7 @@ export class DiscordChannel implements Channel {
 
     this.client.on(Events.Error, (error) => {
       this.logger.error({ error }, 'Discord client error');
+      this.disconnectHandler?.(error);
     });
 
     this.client.on(Events.ClientReady, () => {
@@ -66,6 +68,10 @@ export class DiscordChannel implements Channel {
 
   onMessage(handler: (msg: InboundMessage) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  onDisconnect(handler: (error?: Error) => void): void {
+    this.disconnectHandler = handler;
   }
 
   async send(sessionKey: string, content: OutboundMessage): Promise<void> {

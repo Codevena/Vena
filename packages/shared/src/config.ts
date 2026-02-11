@@ -29,6 +29,13 @@ const geminiConfigSchema = providerConfigSchema.extend({
   apiVersion: z.string().optional(),
 });
 
+const agentBudgetSchema = z.object({
+  maxCostPerSession: z.number().optional(),   // USD, e.g. 1.00
+  maxCostPerDay: z.number().optional(),       // USD, e.g. 10.00
+  maxTokensPerTurn: z.number().optional(),    // Token limit per turn
+  warnAt: z.number().default(0.8),            // Warn at 80% of limit
+}).optional();
+
 const agentConfigSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -45,6 +52,7 @@ const agentConfigSchema = z.object({
     enabled: z.boolean().default(false),
     budgetTokens: z.number().default(10000),
   }).optional(),
+  budget: agentBudgetSchema,
 });
 
 export const venaConfigSchema = z.object({

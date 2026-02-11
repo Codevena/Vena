@@ -9,6 +9,7 @@ export class TelegramChannel implements Channel {
   private bot: Bot;
   private media: TelegramMedia;
   private messageHandler?: (msg: InboundMessage) => Promise<void>;
+  private disconnectHandler?: (error?: Error) => void;
   private logger = createLogger('channels:telegram');
 
   constructor(token: string) {
@@ -32,6 +33,8 @@ export class TelegramChannel implements Channel {
 
     this.bot.catch((err) => {
       this.logger.error({ error: err.error }, 'Telegram bot error');
+      const error = err.error instanceof Error ? err.error : new Error(String(err.error));
+      this.disconnectHandler?.(error);
     });
 
     this.bot.start();
@@ -45,6 +48,10 @@ export class TelegramChannel implements Channel {
 
   onMessage(handler: (msg: InboundMessage) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  onDisconnect(handler: (error?: Error) => void): void {
+    this.disconnectHandler = handler;
   }
 
   async send(sessionKey: string, content: OutboundMessage): Promise<void> {

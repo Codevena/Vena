@@ -1,4 +1,6 @@
 export type { Channel } from './channel.js';
+export { withReconnect } from './reconnect.js';
+export type { ReconnectOptions } from './reconnect.js';
 export { TelegramChannel } from './telegram/adapter.js';
 export { TelegramMedia } from './telegram/media.js';
 export { WhatsAppChannel } from './whatsapp/adapter.js';

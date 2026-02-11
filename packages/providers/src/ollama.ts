@@ -43,6 +43,8 @@ interface OllamaStreamChunk {
   };
   done: boolean;
   done_reason?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
 }
 
 export class OllamaProvider implements LLMProvider {
@@ -136,6 +138,14 @@ export class OllamaProvider implements LLMProvider {
           // Handle done
           if (chunk.done) {
             const hasTools = chunk.message.tool_calls && chunk.message.tool_calls.length > 0;
+
+            const usage = (chunk.prompt_eval_count !== undefined || chunk.eval_count !== undefined)
+              ? {
+                  inputTokens: chunk.prompt_eval_count ?? 0,
+                  outputTokens: chunk.eval_count ?? 0,
+                }
+              : undefined;
+
             yield {
               type: 'stop',
               stopReason: hasTools
@@ -143,6 +153,7 @@ export class OllamaProvider implements LLMProvider {
                 : chunk.done_reason === 'length'
                   ? 'max_tokens'
                   : 'end_turn',
+              usage,
             };
           }
         }

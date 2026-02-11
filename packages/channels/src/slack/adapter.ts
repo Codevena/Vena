@@ -13,6 +13,7 @@ export class SlackChannel implements Channel {
   public readonly name = 'slack';
   private app: App | null = null;
   private messageHandler?: (msg: InboundMessage) => Promise<void>;
+  private disconnectHandler?: (error?: Error) => void;
   private logger = createLogger('channels:slack');
   private options: SlackChannelOptions;
 
@@ -62,6 +63,8 @@ export class SlackChannel implements Channel {
 
     this.app.error(async (error) => {
       this.logger.error({ error }, 'Slack app error');
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.disconnectHandler?.(err);
     });
 
     await this.app.start();
@@ -78,6 +81,10 @@ export class SlackChannel implements Channel {
 
   onMessage(handler: (msg: InboundMessage) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  onDisconnect(handler: (error?: Error) => void): void {
+    this.disconnectHandler = handler;
   }
 
   async send(sessionKey: string, content: OutboundMessage): Promise<void> {

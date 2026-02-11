@@ -22,6 +22,7 @@ export class WhatsAppChannel implements Channel {
   private sock: WASocket | null = null;
   private media: WhatsAppMedia | null = null;
   private messageHandler?: (msg: InboundMessage) => Promise<void>;
+  private disconnectHandler?: (error?: Error) => void;
   private logger = createLogger('channels:whatsapp');
   private options: WhatsAppChannelOptions;
 
@@ -49,16 +50,18 @@ export class WhatsAppChannel implements Channel {
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut;
 
         this.logger.warn({ statusCode }, 'WhatsApp connection closed');
 
-        if (shouldReconnect) {
-          this.logger.info('Reconnecting to WhatsApp...');
-          this.connect();
-        } else {
+        if (isLoggedOut) {
           this.logger.info('WhatsApp logged out, not reconnecting');
         }
+
+        const error = lastDisconnect?.error instanceof Error
+          ? lastDisconnect.error
+          : new Error(`WhatsApp disconnected (status ${statusCode})`);
+        this.disconnectHandler?.(error);
       } else if (connection === 'open') {
         this.logger.info('WhatsApp channel connected');
       }
@@ -93,6 +96,10 @@ export class WhatsAppChannel implements Channel {
 
   onMessage(handler: (msg: InboundMessage) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  onDisconnect(handler: (error?: Error) => void): void {
+    this.disconnectHandler = handler;
   }
 
   async send(sessionKey: string, content: OutboundMessage): Promise<void> {

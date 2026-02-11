@@ -42,6 +42,6 @@ export type { SummarizeFn } from './compaction/compactor.js';
 export { Pruner } from './compaction/pruner.js';
 
 export { UsageTracker } from './agent/usage-tracker.js';
-export type { UsageRecord, UsageSummary } from './agent/usage-tracker.js';
+export type { UsageRecord, UsageSummary, BudgetConfig, BudgetCheck } from './agent/usage-tracker.js';
 
 export * from './security/index.js';

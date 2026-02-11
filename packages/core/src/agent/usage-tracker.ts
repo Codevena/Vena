@@ -44,11 +44,26 @@ const PRICING: Record<string, { input: number; output: number }> = {
   'default': { input: 1.0, output: 3.0 },
 };
 
+export interface BudgetConfig {
+  maxCostPerSession?: number;   // USD
+  maxCostPerDay?: number;       // USD
+  maxTokensPerTurn?: number;    // Token limit per turn
+  warnAt?: number;              // Warn at this fraction of limit (default 0.8)
+}
+
+export interface BudgetCheck {
+  allowed: boolean;
+  reason?: string;
+  usagePercent: number;         // 0-1, highest percentage across all limits
+  warning?: string;             // Set when usagePercent >= warnAt
+}
+
 export class UsageTracker {
   private records: UsageRecord[] = [];
   private filePath: string;
   private dirty = false;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private budgets = new Map<string, BudgetConfig>();
 
   constructor(dataDir: string) {
     this.filePath = path.join(dataDir, 'usage.json');
@@ -56,6 +71,10 @@ export class UsageTracker {
 
     // Auto-flush every 30s
     this.flushTimer = setInterval(() => this.save(), 30000);
+  }
+
+  setBudget(agentId: string, budget: BudgetConfig): void {
+    this.budgets.set(agentId, budget);
   }
 
   record(params: {
@@ -132,6 +151,65 @@ export class UsageTracker {
 
   getAgentUsage(agentId: string): UsageRecord[] {
     return this.records.filter((r) => r.agentId === agentId);
+  }
+
+  getDailyUsage(agentId: string): number {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    return this.records
+      .filter((r) => r.agentId === agentId && r.timestamp.startsWith(today))
+      .reduce((sum, r) => sum + r.estimatedCost, 0);
+  }
+
+  getSessionUsage(agentId: string, sessionKey: string): number {
+    return this.records
+      .filter((r) => r.agentId === agentId && r.sessionKey === sessionKey)
+      .reduce((sum, r) => sum + r.estimatedCost, 0);
+  }
+
+  checkBudget(agentId: string, sessionKey: string): BudgetCheck {
+    const budget = this.budgets.get(agentId);
+    if (!budget) {
+      return { allowed: true, usagePercent: 0 };
+    }
+
+    const warnAt = budget.warnAt ?? 0.8;
+    let maxPercent = 0;
+
+    // Check daily cost limit
+    if (budget.maxCostPerDay !== undefined) {
+      const dailyCost = this.getDailyUsage(agentId);
+      const pct = dailyCost / budget.maxCostPerDay;
+      maxPercent = Math.max(maxPercent, pct);
+      if (pct >= 1) {
+        return {
+          allowed: false,
+          reason: `Daily budget exceeded: $${dailyCost.toFixed(4)} / $${budget.maxCostPerDay.toFixed(2)}`,
+          usagePercent: pct,
+        };
+      }
+    }
+
+    // Check session cost limit
+    if (budget.maxCostPerSession !== undefined) {
+      const sessionCost = this.getSessionUsage(agentId, sessionKey);
+      const pct = sessionCost / budget.maxCostPerSession;
+      maxPercent = Math.max(maxPercent, pct);
+      if (pct >= 1) {
+        return {
+          allowed: false,
+          reason: `Session budget exceeded: $${sessionCost.toFixed(4)} / $${budget.maxCostPerSession.toFixed(2)}`,
+          usagePercent: pct,
+        };
+      }
+    }
+
+    // Build warning if approaching limit
+    const result: BudgetCheck = { allowed: true, usagePercent: maxPercent };
+    if (maxPercent >= warnAt) {
+      result.warning = `Budget usage at ${(maxPercent * 100).toFixed(0)}%`;
+    }
+
+    return result;
   }
 
   private estimateCost(model: string, inputTokens: number, outputTokens: number): number {

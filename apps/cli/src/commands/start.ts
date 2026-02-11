@@ -2,39 +2,15 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { VenaConfig, InboundMessage, Message, Session, OutboundMessage, MediaAttachment } from '@vena/shared';
+import type { VenaConfig, InboundMessage, Message } from '@vena/shared';
 import { createLogger } from '@vena/shared';
-import type { Tool } from '@vena/shared';
 import { GatewayServer } from '@vena/gateway';
-import { TelegramChannel, WhatsAppChannel, SlackChannel, DiscordChannel, SignalChannel } from '@vena/channels';
-import type { Channel } from '@vena/channels';
-import {
-  AgentLoop,
-  MemoryManager,
-  BashTool,
-  ReadTool,
-  WriteTool,
-  EditTool,
-  WebBrowseTool,
-  BrowserTool,
-  GoogleTool,
-  ToolGuard,
-  ConsultTool,
-  DelegateTool,
-  CronTool,
-  SessionTool,
-  MessageTool,
-  ImageTool,
-  UsageTracker,
-} from '@vena/core';
-import type { BrowserAdapter, GoogleAdapters } from '@vena/core';
-import type { SecurityPolicy, SemanticMemoryProvider } from '@vena/core';
 import { SenderApproval } from '@vena/gateway';
-import { MemoryEngine } from '@vena/semantic-memory';
+import { UsageTracker } from '@vena/core';
+import type { BrowserAdapter, GoogleAdapters, SemanticMemoryProvider } from '@vena/core';
 import type { LLMProvider } from '@vena/providers';
+import { MemoryEngine } from '@vena/semantic-memory';
 import { VoiceMessagePipeline, TextToSpeech, SpeechToText } from '@vena/voice';
-import { AgentRegistry, MessageBus, MeshNetwork, IntentRouter, ConsultationManager, DelegationManager } from '@vena/agents';
-import type { AgentDescriptor } from '@vena/agents';
 import { SkillLoader, SkillRegistry, SkillInjector } from '@vena/skills';
 import { triggerHook, createHookEvent, loadAndRegisterHooks } from '@vena/hooks';
 import { CronService } from '@vena/cron';
@@ -56,115 +32,13 @@ import {
   divider,
   getTerminalWidth,
 } from '../ui/terminal.js';
+import { ChatSessionManager } from '../lib/session-manager.js';
+import { collectStreamText, createAgentLoops } from '../lib/agent-factory.js';
+import { createMessageHandler } from '../lib/message-handler.js';
+import { connectAllChannels } from '../lib/channel-connector.js';
+import type { ToolBuilderDeps } from '../lib/tool-builder.js';
 
 const log = createLogger('cli:start');
-
-// ── Helpers ─────────────────────────────────────────────────────────────
-
-async function collectStreamText(provider: LLMProvider, prompt: string): Promise<string> {
-  let text = '';
-  for await (const chunk of provider.chat({
-    messages: [{ id: 'q', role: 'user', content: prompt, timestamp: new Date().toISOString() }],
-    maxTokens: 2048,
-  })) {
-    if (chunk.type === 'text' && chunk.text) text += chunk.text;
-  }
-  return text;
-}
-
-// ── Session Management ───────────────────────────────────────────────
-
-const sessions = new Map<string, Session>();
-
-function getOrCreateSession(sessionKey: string, channelName: string, userId: string, agentId: string): Session {
-  let session = sessions.get(sessionKey);
-  if (!session) {
-    session = {
-      id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      channelName,
-      sessionKey,
-      messages: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      metadata: {
-        userId,
-        agentId,
-        tokenCount: 0,
-        compactionCount: 0,
-      },
-    };
-    sessions.set(sessionKey, session);
-  }
-  return session;
-}
-
-function createEphemeralSession(
-  sessionKey: string,
-  channelName: string,
-  userId: string,
-  agentId: string,
-  seedMessages: Message[] = [],
-): Session {
-  return {
-    id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    channelName,
-    sessionKey,
-    messages: seedMessages,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    metadata: {
-      userId,
-      agentId,
-      tokenCount: 0,
-      compactionCount: 0,
-    },
-  };
-}
-
-type OpenAICompatRaw = {
-  messages?: Array<{ role: string; content: string }>;
-};
-
-function extractOpenAiHistory(rawMessages: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> {
-  const lastUserIndex = [...rawMessages].map(m => m.role).lastIndexOf('user');
-  if (lastUserIndex <= 0) return [];
-  return rawMessages.slice(0, lastUserIndex).filter(m => m.role !== 'system');
-}
-
-function extractOpenAiSystemMessages(rawMessages: Array<{ role: string; content: string }>): string[] {
-  const seen = new Set<string>();
-  const system: string[] = [];
-  for (const msg of rawMessages) {
-    if (msg.role !== 'system') continue;
-    const normalized = msg.content.trim();
-    if (!normalized) continue;
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    system.push(normalized);
-  }
-  return system;
-}
-
-function extractOpenAiSystemPrompt(rawMessages: Array<{ role: string; content: string }>): string | undefined {
-  const system = extractOpenAiSystemMessages(rawMessages).join('\n\n').trim();
-  return system.length > 0 ? system : undefined;
-}
-
-function mapOpenAiMessages(rawMessages: Array<{ role: string; content: string }>): Message[] {
-  const now = () => new Date().toISOString();
-  return rawMessages.map((m, idx) => {
-    const role: Message['role'] =
-      m.role === 'assistant' || m.role === 'system' || m.role === 'tool'
-        ? m.role
-        : 'user';
-    return {
-      id: `msg_hist_${idx}_${Date.now()}`,
-      role,
-      content: m.content,
-      timestamp: now(),
-    };
-  });
-}
 
 // ── Boot Sequence ─────────────────────────────────────────────────────
 
@@ -368,7 +242,6 @@ export const startCommand = new Command('start')
       return;
     }
 
-    // Apply CLI overrides
     const gatewayPort = opts.port ? parseInt(opts.port, 10) : config.gateway.port;
     const gatewayHost = opts.host ?? config.gateway.host;
 
@@ -507,12 +380,7 @@ export const startCommand = new Command('start')
       const bundledPath = path.join(DATA_DIR, 'skills', 'bundled');
       const workspaceDirs = config.skills.dirs;
 
-      const loader = new SkillLoader(
-        bundledPath,
-        managedPath,
-        workspaceDirs,
-      );
-
+      const loader = new SkillLoader(bundledPath, managedPath, workspaceDirs);
       const loadedSkills = await loader.loadAll();
       for (const skill of loadedSkills) {
         skillRegistry.register(skill);
@@ -539,7 +407,16 @@ export const startCommand = new Command('start')
       log.warn({ error: err }, 'Failed to load hooks (non-critical)');
     }
 
+    // ── Sessions + Channels Map ──────────────────────────────────────
+    const sessions = new ChatSessionManager();
+    const connectedChannels = new Map<string, { channel: any; connected: boolean }>();
+
     // ── Cron Service ─────────────────────────────────────────────────
+    // Forward-declare so cron callback can reference handleMessage + agentLoops
+    let handleMessage: (inbound: InboundMessage) => Promise<{ text?: string }>;
+    let agentLoopsMap: Map<string, any>;
+    let defaultAgentId: string;
+
     const cronService = new CronService({
       callback: async (job) => {
         log.info({ jobId: job.id, name: job.name }, 'Cron job executing');
@@ -553,9 +430,8 @@ export const startCommand = new Command('start')
           return;
         }
 
-        // agentTurn payload — route through the agent loop
         const targetAgent = job.agentId ?? defaultAgentId;
-        const loop = agentLoops.get(targetAgent);
+        const loop = agentLoopsMap.get(targetAgent);
         if (!loop) {
           log.warn({ jobId: job.id, agent: targetAgent }, 'Cron: agent not found');
           return;
@@ -587,615 +463,67 @@ export const startCommand = new Command('start')
       log.warn({ error: err }, 'Failed to start cron service (non-critical)');
     }
 
-    // ── Usage Tracker ─────────────────────────────────────────────────
+    // ── Usage Tracker + Sender Approval ──────────────────────────────
     const usageTracker = new UsageTracker(DATA_DIR);
-
-    // ── Sender Approval ──────────────────────────────────────────────
     const senderApproval = new SenderApproval({
       mode: config.gateway.senderApproval.mode,
       dataDir: DATA_DIR,
     });
 
-    // ── Connected Channels Map (for Message Tool) ────────────────────
-    const connectedChannels = new Map<string, { channel: any; connected: boolean }>();
+    // ── Build Agents ─────────────────────────────────────────────────
+    const toolBuilderDeps: ToolBuilderDeps = {
+      config,
+      dataDir: DATA_DIR,
+      browserAdapter,
+      googleAdapters,
+      cronService,
+      sessions,
+      connectedChannels,
+    };
 
-    // ── Build Tools + Security Guard ─────────────────────────────────
-    function buildToolsForTrust(trustLevel: 'full' | 'limited' | 'readonly'): { tools: Tool[]; guard: ToolGuard } {
-      const securityPolicy: SecurityPolicy = {
-        trustLevel,
-        allowedTools: ['*'],
-        allowedPaths: [DATA_DIR],
-        blockedPaths: config.security.pathPolicy.blockedPatterns,
-        allowedCommands: config.security.shell.allowedCommands,
-        maxOutputBytes: 1024 * 1024,
-        envPassthrough: config.security.shell.envPassthrough,
-        allowPrivateIPs: config.security.urlPolicy.allowPrivateIPs,
-      };
+    const agents = createAgentLoops({
+      config,
+      dataDir: DATA_DIR,
+      defaultProvider,
+      providerName,
+      modelName,
+      semanticProvider,
+      skillsContext,
+      toolBuilderDeps,
+      createProvider,
+    });
 
-      const guard = new ToolGuard(securityPolicy);
-      const tools: Tool[] = [
-        new ReadTool(),
-        new WebBrowseTool({ allowPrivateIPs: config.security.urlPolicy.allowPrivateIPs }),
-      ];
-
-      if (trustLevel !== 'readonly') {
-        tools.push(new WriteTool());
-        tools.push(new EditTool());
-      }
-
-      if (trustLevel === 'full' && config.computer.shell.enabled) {
-        const dockerCfg = config.computer.docker;
-        tools.push(new BashTool({
-          envPassthrough: config.security.shell.envPassthrough,
-          docker: dockerCfg?.enabled ? {
-            image: dockerCfg.image,
-            memoryLimit: dockerCfg.memoryLimit,
-            cpuLimit: dockerCfg.cpuLimit,
-            network: dockerCfg.network,
-            readOnlyRoot: dockerCfg.readOnlyRoot,
-          } : undefined,
-        }));
-      }
-
-      if (trustLevel !== 'readonly' && config.computer.browser.enabled && browserAdapter) {
-        tools.push(new BrowserTool(browserAdapter, config.computer.browser.headless));
-      }
-
-      if (googleAdapters) {
-        tools.push(new GoogleTool(googleAdapters));
-      }
-
-      // Cron tool (full trust only)
-      if (trustLevel === 'full') {
-        tools.push(new CronTool({
-          list: () => cronService.listJobs().map(j => ({
-            id: j.id,
-            name: j.name,
-            schedule: j.schedule.kind === 'cron' ? j.schedule.expr : j.schedule.kind === 'at' ? `at ${j.schedule.at}` : `every ${j.schedule.everyMs}ms`,
-            enabled: j.enabled,
-            nextRun: j.state.nextRunAtMs ? new Date(j.state.nextRunAtMs).toISOString() : undefined,
-          })),
-          add: async (name, schedule, message, agentId) => {
-            const job = await cronService.addJob({
-              name,
-              schedule: { kind: 'cron', expr: schedule },
-              payload: { kind: 'agentTurn', message },
-              agentId,
-              enabled: true,
-              sessionTarget: 'main',
-              wakeMode: 'now',
-            });
-            return job.id;
-          },
-          remove: async (jobId) => cronService.removeJob(jobId),
-          enable: async (jobId) => {
-            const result = await cronService.updateJob(jobId, { enabled: true });
-            return !!result;
-          },
-          disable: async (jobId) => {
-            const result = await cronService.updateJob(jobId, { enabled: false });
-            return !!result;
-          },
-        }));
-      }
-
-      // Session tool
-      tools.push(new SessionTool({
-        list: () => Array.from(sessions.entries()).map(([key, s]) => ({
-          sessionKey: key,
-          channelName: s.channelName,
-          agentId: s.metadata.agentId,
-          messageCount: s.messages.length,
-          updatedAt: s.updatedAt,
-        })),
-        get: (key) => sessions.get(key),
-        clear: (key) => sessions.delete(key),
-      }));
-
-      // Message tool (for proactive outbound messages)
-      if (trustLevel !== 'readonly') {
-        tools.push(new MessageTool({
-          listChannels: () => Array.from(connectedChannels.entries()).map(([name, c]) => ({
-            name,
-            connected: c.connected,
-          })),
-          send: async (channelName, sessionKey, content) => {
-            const entry = connectedChannels.get(channelName);
-            if (!entry || !entry.connected) {
-              throw new Error(`Channel "${channelName}" not connected`);
-            }
-            await entry.channel.send(sessionKey, content);
-          },
-        }));
-      }
-
-      // Image tool
-      if (config.image?.apiKey) {
-        tools.push(new ImageTool({
-          provider: config.image.provider ?? 'openai',
-          model: config.image.model ?? 'dall-e-3',
-          apiKey: config.image.apiKey,
-        }));
-      }
-
-      return { tools, guard };
-    }
-
-    // ── Create Agent Loops (per agent in registry) ───────────────────
-    const agentLoops = new Map<string, AgentLoop>();
-    const agentMemory = new Map<string, MemoryManager>();
-    const agentProviderNames = new Map<string, string>();
-    const agentProviders = new Map<string, LLMProvider>();
-    const registry = config.agents.registry;
-
-    // Build agent info list for mesh tools and intent router
-    const agentInfoList = registry.map((a) => ({
-      id: a.id,
-      name: a.name,
-      capabilities: a.capabilities,
-    }));
-
-    // Build agents-context XML for system prompt injection (multi-agent only)
-    function buildAgentsContext(selfAgentId: string): string | undefined {
-      if (registry.length <= 1) return undefined;
-      const peers = registry.filter((a) => a.id !== selfAgentId);
-      if (peers.length === 0) return undefined;
-
-      const lines = [
-        'You are part of a multi-agent team. You can consult or delegate tasks to peer agents using the consult_agent and delegate_task tools.',
-        '',
-        'Available peers:',
-        ...peers.map(
-          (a) => `- ${a.name} (id: ${a.id}): capabilities=[${a.capabilities.join(', ')}]`,
-        ),
-        '',
-        'Use consult_agent to ask a peer a question. Use delegate_task to hand off a task entirely.',
-      ];
-      return lines.join('\n');
-    }
-
-    // Leaf-loop runner: creates a fresh AgentLoop WITHOUT mesh tools (prevents recursion)
-    async function runLeafAgent(
-      targetAgentId: string,
-      prompt: string,
-      role: 'consult' | 'delegate',
-    ): Promise<string> {
-      const targetConfig = registry.find((a) => a.id === targetAgentId);
-      if (!targetConfig) return `Agent "${targetAgentId}" not found.`;
-
-      const trustLevel = (targetConfig.trustLevel ?? config.security.defaultTrustLevel ?? 'limited') as
-        'full' | 'limited' | 'readonly';
-      const { tools: leafTools, guard: leafGuard } = buildToolsForTrust(trustLevel);
-
-      const provider = agentProviders.get(targetAgentId) ?? defaultProvider;
-      const mm = agentMemory.get(targetAgentId);
-      const leafMemory = mm ?? new MemoryManager({
-        workspacePath: DATA_DIR,
-        agentId: targetAgentId,
-        semantic: semanticProvider,
-      });
-
-      const systemPrefix = role === 'consult'
-        ? 'A peer agent is consulting you. Answer their question concisely.'
-        : 'A peer agent is delegating a task to you. Complete it and report the result.';
-
-      const leafLoop = new AgentLoop({
-        provider,
-        tools: leafTools, // No ConsultTool/DelegateTool — structurally prevents recursion
-        systemPrompt: `${systemPrefix}\n\n${targetConfig.persona ?? 'You are a helpful AI assistant.'}`,
-        skillsContext: skillsContext || undefined,
-        memoryManager: leafMemory,
-        guard: leafGuard,
-        workspacePath: DATA_DIR,
-        options: {
-          maxIterations: 5,
-          maxTokens: 2048,
-          streamTools: true,
-        },
-      });
-
-      const ephemeralSession: Session = {
-        id: `sess_leaf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        channelName: 'mesh',
-        sessionKey: `leaf:${targetAgentId}:${Date.now()}`,
-        messages: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        metadata: {
-          userId: 'mesh',
-          agentId: targetAgentId,
-          tokenCount: 0,
-          compactionCount: 0,
-        },
-      };
-
-      const userMessage: Message = {
-        id: `msg_leaf_${Date.now()}`,
-        role: 'user',
-        content: prompt,
-        timestamp: new Date().toISOString(),
-      };
-
-      let responseText = '';
-      for await (const event of leafLoop.run(userMessage, ephemeralSession)) {
-        if (event.type === 'text') responseText += event.text;
-        else if (event.type === 'done') responseText = event.response || responseText;
-        else if (event.type === 'error') return `Error: ${event.error.message}`;
-      }
-
-      // Log the collaboration to memory if we have agentMemory
-      if (mm) {
-        try {
-          await mm.log(`[${role === 'consult' ? 'consultation' : 'delegation'} from peer] ${prompt.slice(0, 200)}`);
-          if (responseText) {
-            await mm.log(`[${role} response] ${responseText.slice(0, 500)}`);
-          }
-        } catch {
-          // Non-critical
-        }
-      }
-
-      return responseText || 'No response from agent.';
-    }
-
-    for (const agentConfig of registry) {
-      const trustLevel = (agentConfig.trustLevel ?? config.security.defaultTrustLevel ?? 'limited') as
-        'full' | 'limited' | 'readonly';
-
-      // Per-agent provider (may differ by provider/model)
-      let agentProvider: LLMProvider;
-      let agentProviderName = providerName;
-      try {
-        const result = createProvider(config, agentConfig.provider, agentConfig.model, agentConfig);
-        agentProvider = result.provider;
-        agentProviderName = result.providerName;
-      } catch {
-        agentProvider = defaultProvider;
-      }
-      agentProviderNames.set(agentConfig.id, agentProviderName);
-      agentProviders.set(agentConfig.id, agentProvider);
-
-      // Per-agent memory
-      const mm = new MemoryManager({
-        workspacePath: DATA_DIR,
-        agentId: agentConfig.id,
-        semantic: semanticProvider,
-      });
-      agentMemory.set(agentConfig.id, mm);
-
-      // Per-agent tools
-      const { tools, guard } = buildToolsForTrust(trustLevel);
-
-      // Add mesh tools when multi-agent (consult + delegate)
-      if (registry.length > 1) {
-        tools.push(
-          new ConsultTool(
-            async (targetId, question, _ctx) => {
-              // Use runLeafAgent which provides the actual agent execution
-              // ConsultationManager tracks state via MessageBus, but direct execution is simpler for now
-              log.debug({ from: agentConfig.id, to: targetId, question: question.slice(0, 100) }, 'Agent consultation');
-              return runLeafAgent(targetId, question, 'consult');
-            },
-            agentInfoList,
-            agentConfig.id,
-          ),
-        );
-        tools.push(
-          new DelegateTool(
-            async (targetId, task, _ctx) => {
-              // Use runLeafAgent which provides the actual agent execution
-              // DelegationManager tracks state via MessageBus, but direct execution is simpler for now
-              log.debug({ from: agentConfig.id, to: targetId, task: task.slice(0, 100) }, 'Agent delegation');
-              return runLeafAgent(targetId, task, 'delegate');
-            },
-            agentInfoList,
-            agentConfig.id,
-          ),
-        );
-      }
-
-      const loop = new AgentLoop({
-        provider: agentProvider,
-        tools,
-        systemPrompt: agentConfig.persona ?? 'You are a helpful AI assistant.',
-        skillsContext: skillsContext || undefined,
-        agentsContext: buildAgentsContext(agentConfig.id),
-        memoryManager: mm,
-        guard,
-        workspacePath: DATA_DIR,
-        thinking: agentConfig.thinking?.enabled ? {
-          enabled: true,
-          budgetTokens: agentConfig.thinking.budgetTokens ?? 10000,
-        } : undefined,
-        options: {
-          maxIterations: 10,
-          maxTokens: 4096,
-          streamTools: true,
-        },
-      });
-
-      agentLoops.set(agentConfig.id, loop);
-      log.info({ agent: agentConfig.name, id: agentConfig.id, trustLevel, tools: tools.map(t => t.name) }, 'Agent loop created');
-    }
-
-    // Collect all tool names from the first agent for display
-    const firstAgentConfig = registry[0];
-    const firstTrust = (firstAgentConfig?.trustLevel ?? 'limited') as 'full' | 'limited' | 'readonly';
-    const displayTools = buildToolsForTrust(firstTrust).tools;
-
-    // ── Mesh Network (multi-agent routing) ───────────────────────────
-    let mesh: MeshNetwork | undefined;
-    let consultationManager: ConsultationManager | undefined;
-    let delegationManager: DelegationManager | undefined;
-    const defaultAgentId = firstAgentConfig?.id ?? 'main';
-
-    if (registry.length > 1) {
-      const agentReg = new AgentRegistry();
-      const bus = new MessageBus();
-      mesh = new MeshNetwork(agentReg, bus);
-
-      for (const agentConfig of registry) {
-        mesh.addAgent({
-          id: agentConfig.id,
-          name: agentConfig.name,
-          persona: agentConfig.persona,
-          capabilities: agentConfig.capabilities,
-          provider: agentConfig.provider,
-          model: agentConfig.model ?? modelName,
-          status: 'active',
-          channels: agentConfig.channels,
-          trustLevel: agentConfig.trustLevel,
-          memoryNamespace: `agent-${agentConfig.id}`,
-        });
-      }
-
-      // Wire LLM-based intent router
-      const intentRouter = new IntentRouter(
-        (prompt: string) => collectStreamText(defaultProvider, prompt),
-        defaultAgentId,
-      );
-      const descriptors: AgentDescriptor[] = registry.map((a) => ({
-        id: a.id,
-        name: a.name,
-        persona: a.persona,
-        capabilities: a.capabilities,
-      }));
-      intentRouter.setAgents(descriptors);
-      mesh.setIntentRouter(intentRouter);
-
-      // Create consultation and delegation managers
-      consultationManager = new ConsultationManager(bus, agentReg, 30000);
-      delegationManager = new DelegationManager(bus, agentReg);
-
-      log.info({ agents: registry.length }, 'Mesh network + intent routing + collaboration managers initialized');
-    }
+    agentLoopsMap = agents.agentLoops;
+    defaultAgentId = agents.defaultAgentId;
 
     // ── Message Handler ─────────────────────────────────────────────
-    let totalMessages = 0;
+    const handler = createMessageHandler({
+      config,
+      registry: config.agents.registry,
+      defaultAgentId: agents.defaultAgentId,
+      providerName,
+      modelName,
+      agentLoops: agents.agentLoops,
+      agentMemory: agents.agentMemory,
+      agentProviderNames: agents.agentProviderNames,
+      mesh: agents.mesh,
+      voicePipeline,
+      sessions,
+      usageTracker,
+      senderApproval,
+    });
 
-    async function selectAgent(content: string): Promise<string> {
-      if (!mesh || registry.length <= 1) return defaultAgentId;
-
-      try {
-        return await mesh.routeMessageAsync(content, defaultAgentId);
-      } catch {
-        return defaultAgentId;
-      }
-    }
-
-    async function handleMessage(inbound: InboundMessage): Promise<{ text?: string }> {
-      totalMessages++;
-
-      // Voice transcription: if inbound has audio/voice media, transcribe it
-      let content = inbound.content;
-      const hasVoice = inbound.media?.some(m => m.type === 'voice' || m.type === 'audio');
-
-      if (voicePipeline && hasVoice) {
-        const voiceMedia = inbound.media!.find(m => m.type === 'voice' || m.type === 'audio');
-        if (voiceMedia?.buffer) {
-          try {
-            const transcribed = await voicePipeline.processIncoming(voiceMedia.buffer, voiceMedia.mimeType);
-            if (transcribed) {
-              content = transcribed;
-              log.info({ original: !!inbound.content, transcribed: transcribed.slice(0, 100) }, 'Voice transcribed');
-            }
-          } catch (err) {
-            log.error({ error: err }, 'Voice transcription failed');
-          }
-        }
-      }
-
-      // Route to best agent
-      const targetAgentId = await selectAgent(content);
-      const loop = agentLoops.get(targetAgentId) ?? agentLoops.get(defaultAgentId)!;
-      const mm = agentMemory.get(targetAgentId) ?? agentMemory.get(defaultAgentId)!;
-
-      if (targetAgentId !== defaultAgentId) {
-        log.info({ target: targetAgentId, content: content.slice(0, 80) }, 'Routed to agent');
-      }
-
-      let session: Session;
-      let systemPromptOverride: string | undefined;
-      const raw = inbound.raw as OpenAICompatRaw | undefined;
-      const rawMessages = Array.isArray(raw?.messages) ? raw!.messages! : null;
-      if (rawMessages && inbound.channelName === 'openai-compat') {
-        const targetProvider = agentProviderNames.get(targetAgentId) ?? providerName;
-        const isOpenAIProvider = targetProvider === 'openai';
-        const history = extractOpenAiHistory(rawMessages);
-        const systemMessages = extractOpenAiSystemMessages(rawMessages);
-        let seedMessages = mapOpenAiMessages(history);
-
-        if (isOpenAIProvider && systemMessages.length > 0) {
-          const systemSeeds = mapOpenAiMessages(systemMessages.map((content) => ({ role: 'system', content })));
-          seedMessages = [...systemSeeds, ...seedMessages];
-        }
-        session = createEphemeralSession(
-          inbound.sessionKey,
-          inbound.channelName,
-          inbound.userId,
-          targetAgentId,
-          seedMessages,
-        );
-        const systemPrompt = !isOpenAIProvider ? extractOpenAiSystemPrompt(rawMessages) : undefined;
-        if (systemPrompt) {
-          const targetConfig = registry.find(a => a.id === targetAgentId) ?? firstAgentConfig;
-          const basePrompt = targetConfig?.persona ?? 'You are a helpful AI assistant.';
-          systemPromptOverride = [systemPrompt, basePrompt].join('\n\n');
-        }
-      } else {
-        session = getOrCreateSession(
-          inbound.sessionKey,
-          inbound.channelName,
-          inbound.userId,
-          targetAgentId,
-        );
-      }
-
-      const userMessage: Message = {
-        id: `msg_${Date.now()}`,
-        role: 'user',
-        content,
-        timestamp: new Date().toISOString(),
-        metadata: {
-          userId: inbound.userId,
-          userName: inbound.userName,
-          channelName: inbound.channelName,
-        },
-      };
-
-      let responseText = '';
-
-      // Hook: session message received
-      triggerHook(createHookEvent('session', 'message', inbound.sessionKey, {
-        userId: inbound.userId,
-        channel: inbound.channelName,
-        agentId: targetAgentId,
-        content: content.slice(0, 200),
-      })).catch(() => {});
-
-      try {
-        const overrides = systemPromptOverride ? { systemPrompt: systemPromptOverride } : undefined;
-        for await (const event of loop.run(userMessage, session, overrides)) {
-          switch (event.type) {
-            case 'text':
-              responseText += event.text;
-              break;
-            case 'usage':
-              usageTracker.record({
-                agentId: targetAgentId,
-                sessionKey: inbound.sessionKey,
-                model: agentProviderNames.get(targetAgentId) === 'anthropic'
-                  ? (registry.find(a => a.id === targetAgentId)?.model ?? modelName)
-                  : modelName,
-                provider: agentProviderNames.get(targetAgentId) ?? providerName,
-                inputTokens: event.inputTokens,
-                outputTokens: event.outputTokens,
-              });
-              break;
-            case 'done':
-              responseText = event.response || responseText;
-              break;
-            case 'error':
-              log.error({ error: event.error }, 'Agent error');
-              responseText = 'Sorry, I encountered an error processing your message.';
-              break;
-          }
-        }
-      } catch (err) {
-        log.error({ error: err }, 'Agent loop error');
-        responseText = 'Sorry, something went wrong.';
-      }
-
-      // Hook: agent response complete
-      triggerHook(createHookEvent('agent', 'response', inbound.sessionKey, {
-        agentId: targetAgentId,
-        responseLength: responseText.length,
-      })).catch(() => {});
-
-      // Log to flat + semantic memory
-      try {
-        await mm.log(`[${inbound.channelName}/${inbound.userId}] ${content}`);
-        if (responseText) {
-          await mm.log(`[assistant] ${responseText.slice(0, 500)}`);
-        }
-        // Ingest into knowledge graph (fire-and-forget)
-        mm.ingestMessages([
-          userMessage,
-          { id: `msg_${Date.now()}_resp`, role: 'assistant', content: responseText, timestamp: new Date().toISOString() },
-        ]).catch(() => {});
-      } catch {
-        // Non-critical
-      }
-
-      session.updatedAt = new Date().toISOString();
-
-      return { text: responseText };
-    }
-
-    // Voice-aware channel handler: wraps handleMessage with STT/TTS + sender approval
-    async function handleChannelMessage(
-      inbound: InboundMessage,
-      sendFn: (sessionKey: string, content: OutboundMessage) => Promise<void>,
-    ): Promise<void> {
-      // Sender approval check
-      if (!senderApproval.isApproved(inbound.userId, inbound.channelName)) {
-        const mode = senderApproval.getMode();
-        if (mode === 'pairing') {
-          const code = senderApproval.generatePairingCode(inbound.userId, inbound.channelName);
-
-          // Check if the message contains a pairing code
-          if (inbound.content.trim().length === 6 && /^[A-Z0-9]+$/.test(inbound.content.trim().toUpperCase())) {
-            if (senderApproval.verifyPairingCode(inbound.userId, inbound.channelName, inbound.content.trim())) {
-              await sendFn(inbound.sessionKey, { text: 'Pairing successful! You can now send messages.' });
-              return;
-            }
-          }
-
-          await sendFn(inbound.sessionKey, { text: `Please enter your pairing code to start chatting. Your code: ${code}` });
-        } else {
-          await sendFn(inbound.sessionKey, { text: 'You are not authorized to send messages.' });
-        }
-        return;
-      }
-
-      const response = await handleMessage(inbound);
-      const outbound: OutboundMessage = { text: response.text };
-
-      // Synthesize voice reply if input was voice and autoVoiceReply is on
-      if (voicePipeline && response.text) {
-        const shouldVoice = voicePipeline.shouldReplyWithVoice(inbound, {
-          autoVoiceReply: config.voice.autoVoiceReply,
-        });
-
-        if (shouldVoice) {
-          try {
-            // Find agent voiceId if configured
-            const voiceTargetId = await selectAgent(inbound.content);
-            const targetAgent = registry.find(a => a.id === voiceTargetId);
-            const audioBuffer = await voicePipeline.processOutgoing(response.text, targetAgent?.voiceId);
-            outbound.media = [{
-              type: 'voice' as const,
-              buffer: audioBuffer,
-              mimeType: 'audio/ogg',
-            }];
-            log.info({ bytes: audioBuffer.length }, 'Voice response synthesized');
-          } catch (err) {
-            log.error({ error: err }, 'Voice synthesis failed, sending text only');
-          }
-        }
-      }
-
-      await sendFn(inbound.sessionKey, outbound);
-    }
+    handleMessage = handler.handleMessage;
 
     // ── Start Gateway ───────────────────────────────────────────────
+    const registry = config.agents.registry;
     const gateway = new GatewayServer({
       port: gatewayPort,
       host: gatewayHost,
       sessionsPath: SESSIONS_PATH,
     });
 
-    gateway.onMessage(handleMessage);
+    gateway.onMessage(handler.handleMessage);
     gateway.onAgents(() =>
       registry.map((a) => ({
         id: a.id,
@@ -1222,90 +550,27 @@ export const startCommand = new Command('start')
       process.exit(1);
     }
 
-    // ── Connect Channels (Registry Pattern) ────────────────────────
-    const channels: Array<{ name: string; disconnect: () => Promise<void> }> = [];
-    let telegramConnected = false;
-    let whatsappConnected = false;
-    let slackConnected = false;
-    let discordConnected = false;
-    let signalConnected = false;
-
-    async function connectChannel(name: string, createFn: () => Channel): Promise<boolean> {
-      try {
-        const channel = createFn();
-        channel.onMessage(async (inbound) => {
-          await handleChannelMessage(inbound, (key, content) => channel.send(key, content));
-        });
-        await channel.connect();
-        channels.push({ name, disconnect: () => channel.disconnect() });
-        connectedChannels.set(name, { channel, connected: true });
-        log.info(`${name} channel connected`);
-        return true;
-      } catch (err) {
-        log.error({ error: err }, `Failed to connect ${name}`);
-        return false;
-      }
-    }
-
-    // Telegram
-    if (config.channels.telegram?.enabled && config.channels.telegram?.token) {
-      telegramConnected = await connectChannel('telegram', () =>
-        new TelegramChannel(config.channels.telegram!.token!),
-      );
-    }
-
-    // WhatsApp
-    if (config.channels.whatsapp?.enabled) {
-      fs.mkdirSync(WHATSAPP_AUTH_DIR, { recursive: true });
-      whatsappConnected = await connectChannel('whatsapp', () =>
-        new WhatsAppChannel({ authDir: WHATSAPP_AUTH_DIR, printQRInTerminal: true }),
-      );
-    }
-
-    // Slack
-    if (config.channels.slack?.enabled && config.channels.slack?.token && config.channels.slack?.signingSecret) {
-      slackConnected = await connectChannel('slack', () =>
-        new SlackChannel({
-          token: config.channels.slack!.token!,
-          signingSecret: config.channels.slack!.signingSecret!,
-          appToken: config.channels.slack!.appToken,
-        }),
-      );
-    }
-
-    // Discord
-    if (config.channels.discord?.enabled && config.channels.discord?.token && config.channels.discord?.applicationId) {
-      discordConnected = await connectChannel('discord', () =>
-        new DiscordChannel({
-          token: config.channels.discord!.token!,
-          applicationId: config.channels.discord!.applicationId!,
-        }),
-      );
-    }
-
-    // Signal
-    if (config.channels.signal?.enabled && config.channels.signal?.apiUrl && config.channels.signal?.phoneNumber) {
-      signalConnected = await connectChannel('signal', () =>
-        new SignalChannel({
-          apiUrl: config.channels.signal!.apiUrl!,
-          phoneNumber: config.channels.signal!.phoneNumber!,
-        }),
-      );
-    }
+    // ── Connect Channels ────────────────────────────────────────────
+    const channelResult = await connectAllChannels({
+      config,
+      whatsappAuthDir: WHATSAPP_AUTH_DIR,
+      onMessage: handler.handleChannelMessage,
+      channelMap: connectedChannels,
+    });
 
     // ── Boot Sequence + Dashboard ───────────────────────────────────
     const bootResults: BootResults = {
-      telegramConnected,
-      whatsappConnected,
-      slackConnected,
-      discordConnected,
-      signalConnected,
+      telegramConnected: channelResult.telegramConnected,
+      whatsappConnected: channelResult.whatsappConnected,
+      slackConnected: channelResult.slackConnected,
+      discordConnected: channelResult.discordConnected,
+      signalConnected: channelResult.signalConnected,
       gatewayPort,
       gatewayHost,
       providerName,
       modelName,
-      messageCount: totalMessages,
-      toolNames: displayTools.map(t => t.name),
+      messageCount: handler.getMessageCount(),
+      toolNames: agents.displayTools.map(t => t.name),
       semanticMemoryActive: !!memoryEngine,
       voiceEnabled: !!voicePipeline,
       googleServices: googleAdapters ? Object.keys(googleAdapters) : [],
@@ -1330,8 +595,7 @@ export const startCommand = new Command('start')
       console.log(colors.dim(`  Received ${signal}, shutting down...`));
       console.log();
 
-      // Disconnect channels
-      for (const channel of channels) {
+      for (const channel of channelResult.channels) {
         try {
           await channel.disconnect();
           console.log(`  ${colors.dim('●')} ${channel.name} disconnected`);
@@ -1340,7 +604,6 @@ export const startCommand = new Command('start')
         }
       }
 
-      // Stop cron
       try {
         await cronService.stop();
         console.log(`  ${colors.dim('●')} Cron scheduler stopped`);
@@ -1348,10 +611,8 @@ export const startCommand = new Command('start')
         // Non-critical
       }
 
-      // Hook: gateway stopping
       await triggerHook(createHookEvent('gateway', 'stop', 'system', {})).catch(() => {});
 
-      // Stop usage tracker
       try {
         usageTracker.stop();
         console.log(`  ${colors.dim('●')} Usage tracker saved`);
@@ -1359,12 +620,10 @@ export const startCommand = new Command('start')
         // Non-critical
       }
 
-      // Clear pending consultations and delegations
-      if (consultationManager || delegationManager) {
+      if (agents.consultationManager || agents.delegationManager) {
         console.log(`  ${colors.dim('●')} Collaboration managers cleared`);
       }
 
-      // Close browser
       if (browserAdapter) {
         try {
           await browserAdapter.close();
@@ -1374,7 +633,6 @@ export const startCommand = new Command('start')
         }
       }
 
-      // Close semantic memory
       if (memoryEngine) {
         try {
           memoryEngine.close();
@@ -1384,7 +642,6 @@ export const startCommand = new Command('start')
         }
       }
 
-      // Stop gateway
       try {
         await gateway.stop();
         console.log(`  ${colors.dim('●')} Gateway stopped`);
